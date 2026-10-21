@@ -11,13 +11,14 @@ import (
 )
 
 const (
-	// defaultClientVersion 出站 WorkBuddy 客户端版本段（UA 的 `WorkBuddy/<ver>` 与
-	// 白名单头组的 X-IDE-Version）。对齐本机安装的 WorkBuddy Desktop 5.8.3
-	// （app.asar package.json version=5.8.3，取证 2026-10-21）。
-	// config upstream.client_version 可覆盖（空 = 内置默认）。
-	defaultClientVersion = "5.8.3"
-	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。取桌面端自带 CLI 构建版本
-	// （resources/app.asar.unpacked/cli `--version` = 2.161.0）。
+	// defaultClientVersionCN / defaultClientVersionGlobal 出站 WorkBuddy 客户端版本段
+	// （UA 的 `WorkBuddy/<ver>` 与 X-IDE-Version），按 realm 取本机实测的最新桌面端：
+	// CN = WorkBuddy Desktop 5.8.3，国际版 = WorkBuddy AI 5.8.4（app.asar package.json，
+	// 取证 2026-10-21/22）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
+	defaultClientVersionCN     = "5.8.3"
+	defaultClientVersionGlobal = "5.8.4"
+	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。两个桌面端自带 CLI 均为 2.161.0
+	// （resources/app.asar.unpacked/cli `--version`）。
 	// config upstream.cli_version 可覆盖（空 = 内置默认）。
 	defaultCliVersion = "2.161.0"
 
@@ -34,13 +35,18 @@ func originRefererFor(a *auth.Auth) string {
 	return originRefererCN
 }
 
-// clientVersion 生效的 WorkBuddy 客户端版本：Client.ClientVersion 非空则取之，
-// 否则内置默认 defaultClientVersion。
-func (c *Client) clientVersion() string {
+// clientVersion 生效的 WorkBuddy 客户端版本（无 realm 上下文时按 CN 默认）。
+func (c *Client) clientVersion() string { return c.clientVersionFor(nil) }
+
+// clientVersionFor 按 realm 取生效版本：显式 config > global 5.8.4 > CN 5.8.3。
+func (c *Client) clientVersionFor(a *auth.Auth) string {
 	if c != nil && c.ClientVersion != "" {
 		return c.ClientVersion
 	}
-	return defaultClientVersion
+	if a != nil && a.IsGlobal() {
+		return defaultClientVersionGlobal
+	}
+	return defaultClientVersionCN
 }
 
 // cliVersion 生效的 CLI 版本：Client.CliVersion 非空则取之，否则内置默认 defaultCliVersion。
@@ -52,18 +58,18 @@ func (c *Client) cliVersion() string {
 }
 
 // defaultWorkBuddyUAFor 组装默认客户端出站 UA（官方桌面端 RestOperations 层形状）：
-// `WorkBuddy/<clientVersion> <platform>/<clientVersion> CLI/<cliVersion>`。
-// 平台段（第二段）品牌按 realm 切换——CN 用 applicationName 同值 `WorkBuddy`，
-// global 用官方国际版 productName `WorkBuddy AI`（intl 项目逆向证据：
-// `WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2`）。
-// global 账号送错平台段（`WorkBuddy` 非 `WorkBuddy AI`）可能触发上游 403 code 11140
-// "request illegal" 风控。官方无任何 UA 随机化，故默认确定性。
+// `WorkBuddy/<ver> WorkBuddy/<ver> [CLI/<cli>]`。
+// 平台段恒为 `WorkBuddy`：国际版 WorkBuddy AI 5.8.4 的 buildVlmGatewayHeaders
+// 同样硬编码 `WorkBuddy/<ver>` 两段（其 app.asar 内 "WorkBuddy AI" 字符串 0 命中），
+// 国际差异只体现在版本号（5.8.4）与 endpoint（www.workbuddy.ai）。
+// 显式 config cli_version 为空时不追加 CLI 段（官方仅在 platformVersion 存在时追加）。
 func (c *Client) defaultWorkBuddyUAFor(a *auth.Auth) string {
-	platform := "WorkBuddy"
-	if a != nil && a.IsGlobal() {
-		platform = "WorkBuddy AI"
+	v := c.clientVersionFor(a)
+	ua := "WorkBuddy/" + v + " WorkBuddy/" + v
+	if cli := c.cliVersion(); cli != "" {
+		ua += " CLI/" + cli
 	}
-	return "WorkBuddy/" + c.clientVersion() + " " + platform + "/" + c.clientVersion() + " CLI/" + c.cliVersion()
+	return ua
 }
 
 // defaultWorkBuddyUA 返回 CN 形态的默认 UA（默认账号形态即 CN，零回归兼容既有调用/测试）。
@@ -74,7 +80,7 @@ func (c *Client) defaultWorkBuddyUA() string {
 // userAgent 返回当前出站 UA（客户端出站路径：chat/refresh/FetchModels）。
 // 优先级：Client.UserAgent（config user_agent）显式覆盖 > 按账号 realm 的默认 WorkBuddy 三段式。
 // 显式覆盖兼容既有覆盖逻辑：用户配了即以用户值为准（自定义品牌/版本），
-// 未配则走官方桌面端默认形态（global 换 `WorkBuddy AI` 平台段）。
+// 未配则走官方桌面端默认形态（平台段恒 WorkBuddy，版本按 realm）。
 func (c *Client) userAgent(a *auth.Auth) string {
 	if c != nil && c.UserAgent != "" {
 		return c.UserAgent
@@ -85,11 +91,14 @@ func (c *Client) userAgent(a *auth.Auth) string {
 // billingUA 白名单类（billing/checkin/banner）出站 UA：单段 `WorkBuddy/<clientVersion>`
 // （官方 banner 显式覆写形态，不带 CLI 段）。默认生效（伪造官方桌面端指纹）；
 // 显式 client_name="SaaS" 才不设 UA（还原旧行为，Go 默认 UA）。
-func (c *Client) billingUA() string {
+func (c *Client) billingUA() string { return c.billingUAFor(nil) }
+
+// billingUAFor 按 realm 取版本的 billing UA。
+func (c *Client) billingUAFor(a *auth.Auth) string {
 	if c == nil || c.attributionClientName() == "SaaS" {
 		return ""
 	}
-	return "WorkBuddy/" + c.clientVersion()
+	return "WorkBuddy/" + c.clientVersionFor(a)
 }
 
 // resolveDeviceToken 解析本次请求的 X-Device-Token 取值。
@@ -204,7 +213,7 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 		c.injectGlobalChatHeaders(req, a)
 	}
 	// 用量归属头：默认伪造 WorkBuddy 桌面端指纹（client_name="SaaS" 还原旧行为）。
-	c.injectAttribution(req)
+	c.injectAttribution(req, a)
 	// 客户端 IP 透传（仅 PassthroughIP=true 且本次请求带 IP）。
 	c.injectClientIP(req, clientIP)
 	// X-Device-Token 仅 auth/state 与签到路径发送（桌面端 chat 不带），此处不注入。
@@ -315,7 +324,7 @@ func (c *Client) attributionClientName() string {
 // 仅在 chat/completions 路径生效（ChatHeaders 调用）。
 // 显式 ClientName="SaaS" 还原旧行为（仅 X-Product="SaaS"，不设 X-IDE-* / agent 头）；
 // 配其他值则 IDE 两段跟随该值。
-func (c *Client) injectAttribution(req *http.Request) {
+func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	name := c.attributionClientName()
 	if name == "SaaS" {
 		req.Header.Set("X-Product", "SaaS")
@@ -326,7 +335,7 @@ func (c *Client) injectAttribution(req *http.Request) {
 	req.Header.Set("X-Private-Data", "true")
 	req.Header.Set("X-IDE-Name", name)
 	req.Header.Set("X-IDE-Type", name)
-	req.Header.Set("X-IDE-Version", c.clientVersion())
+	req.Header.Set("X-IDE-Version", c.clientVersionFor(a))
 	req.Header.Set("X-Product", "SaaS")
 }
 
@@ -372,7 +381,7 @@ func (c *Client) BillingHeaders(req *http.Request, a *auth.Auth) {
 	req.Header.Set("Accept-Language", acceptLanguageFor(a))
 	if c != nil && c.UserAgent != "" {
 		req.Header.Set("User-Agent", c.UserAgent)
-	} else if ua := c.billingUA(); ua != "" {
+	} else if ua := c.billingUAFor(a); ua != "" {
 		req.Header.Set("User-Agent", ua)
 	}
 	if a.UID != "" {
