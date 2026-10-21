@@ -285,11 +285,23 @@ func TestRefreshSessionDead(t *testing.T) {
 
 func TestChatStreamSendsHeadersAndStreamTrue(t *testing.T) {
 	var gotAuth, gotUID, gotProduct string
+	var gotAgentIntent, gotPrivateData, gotACP, gotTraceparent, gotB3, gotB3Parent string
+	var gotMachine, gotSession, gotOrigin, gotReferer string
 	var gotBody []byte
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		gotAuth = r.Header.Get("Authorization")
 		gotUID = r.Header.Get("X-User-Id")
 		gotProduct = r.Header.Get("X-Product")
+		gotAgentIntent = r.Header.Get("X-Agent-Intent")
+		gotPrivateData = r.Header.Get("X-Private-Data")
+		gotACP = r.Header.Get("acp-connection-id")
+		gotTraceparent = r.Header.Get("traceparent")
+		gotB3 = r.Header.Get("b3")
+		gotB3Parent = r.Header.Get("X-B3-ParentSpanId")
+		gotMachine = r.Header.Get("X-Machine-ID")
+		gotSession = r.Header.Get("X-Session-ID")
+		gotOrigin = r.Header.Get("Origin")
+		gotReferer = r.Header.Get("Referer")
 		gotBody, _ = io.ReadAll(r.Body)
 		return &http.Response{
 			StatusCode: 200,
@@ -306,8 +318,19 @@ func TestChatStreamSendsHeadersAndStreamTrue(t *testing.T) {
 		t.Errorf("200 response should carry nil body, got %q", respBody)
 	}
 	rc.Close()
-	if gotAuth != "Bearer at" || gotUID != "u1" || gotProduct != "WorkBuddy" {
+	if gotAuth != "Bearer at" || gotUID != "u1" || gotProduct != "SaaS" {
 		t.Errorf("headers: auth=%q uid=%q product=%q", gotAuth, gotUID, gotProduct)
+	}
+	// 桌面端 5.8.3 必发：X-Agent-Intent / X-Private-Data / acp-connection-id / 链路族。
+	if gotAgentIntent != "craft" || gotPrivateData != "true" {
+		t.Errorf("agent headers: intent=%q privateData=%q", gotAgentIntent, gotPrivateData)
+	}
+	if gotACP == "" || gotTraceparent == "" || gotB3 == "" || gotB3Parent == "" {
+		t.Errorf("link headers missing: acp=%q traceparent=%q b3=%q parent=%q", gotACP, gotTraceparent, gotB3, gotB3Parent)
+	}
+	// 桌面端从不发送（取证：app.asar 全量检索 0 命中）：这些头出现即暴露网关身份。
+	if gotMachine != "" || gotSession != "" || gotOrigin != "" || gotReferer != "" {
+		t.Errorf("non-client headers leaked: machine=%q session=%q origin=%q referer=%q", gotMachine, gotSession, gotOrigin, gotReferer)
 	}
 	if !bytes.Contains(gotBody, []byte(`"stream":true`)) {
 		t.Errorf("stream not forced: %s", gotBody)

@@ -14,7 +14,8 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 )
 
-// TestDeviceTokenInjected_WhenSet auth.Auth.DeviceToken 非空时 chat/billing 请求均注入。
+// TestDeviceTokenInjected_WhenSet auth.Auth.DeviceToken 非空时 billing 请求注入。
+// chat 路径自 5.8.3 对齐起**不**注入该头（桌面端只在 auth/state 与签到用）。
 func TestDeviceTokenInjected_WhenSet(t *testing.T) {
 	a := &auth.Auth{AccessToken: "at", UID: "u1", DeviceToken: "tok-from-auth"}
 	// 用 server 端验证而非 RoundTripper 捕获：更贴近真实注入路径。
@@ -23,7 +24,6 @@ func TestDeviceTokenInjected_WhenSet(t *testing.T) {
 		apply    func(c *Client, req *http.Request)
 		wantPath string
 	}{
-		{"chat", func(c *Client, req *http.Request) { c.ChatHeaders(req, a, "", ChatMeta{}) }, "/v2/chat/completions"},
 		{"billing", func(c *Client, req *http.Request) { c.BillingHeaders(req, a) }, "/v2/report"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,8 +71,8 @@ func TestDeviceTokenNotInjected_WhenEmpty(t *testing.T) {
 		BillingBaseCN: srv.URL,
 		// DeviceToken / DeviceTokenFile 皆空
 	}
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v2/chat/completions", nil)
-	c.ChatHeaders(req, a, "", ChatMeta{})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v2/report", nil)
+	c.BillingHeaders(req, a)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
@@ -123,8 +123,8 @@ func TestDeviceTokenFromConfigOrFile_Overrides(t *testing.T) {
 				DeviceToken:     tc.cfg,
 				DeviceTokenFile: fp,
 			}
-			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v2/chat/completions", nil)
-			c.ChatHeaders(req, a, "", ChatMeta{})
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v2/report", nil)
+			c.BillingHeaders(req, a)
 			resp, err := c.HTTP.Do(req)
 			if err != nil {
 				t.Fatalf("do: %v", err)

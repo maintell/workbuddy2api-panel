@@ -71,16 +71,12 @@ type SearchOutcome struct {
 
 // SearchHeaders 搜索请求头。
 //
-// 复用 ChatHeaders 的桌面端全套头族（UA 三段式 / Origin / Referer /
-// X-CodeBuddy-Request / X-Machine-ID / X-Session-ID / Accept-Language /
-// Authorization / X-User-Id / 企业与域头 / X-Agent-Purpose + X-IDE-* + X-Product /
-// X-Device-Token / 会话头族 X-Conversation-* + X-Request-ID + X-Root-Request-ID + B3），
-// 再按官方 WebSearchTool 的差异覆盖四处：
-//   - Accept：搜索是非流式 JSON，官方为 application/json
-//     （ChatHeaders 为 chat 流式设成 event-stream，必须覆盖）
+// 复用 ChatHeaders 的桌面端头族（UA 三段式 / X-CodeBuddy-Request / Authorization /
+// X-User-Id / 企业与域头 / X-Agent-Intent + X-Agent-Purpose + X-Private-Data +
+// X-IDE-* + X-Product=SaaS / 会话头族 X-Conversation-* + X-Request-ID +
+// acp-connection-id + traceparent/b3 链路族），再按官方 WebSearchTool 覆盖两处：
 //   - Content-Type：官方搜索为 application/json;charset=UTF-8
-//     （CommonHeaders 的 chat 形态是不带 charset 的 application/json）
-//   - X-Agent-Intent：官方固定 "craft"（搜索请求不携带会话 mode）
+//     （chat 形态是不带 charset 的 application/json）
 //   - X-Agent-Runtime：官方 2.166.0 起必发，无 runtime 时回落 "other"
 //
 // 为什么整体复用 ChatHeaders 而不是照抄官方 WebSearchTool 的精简头清单：
