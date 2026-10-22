@@ -19,9 +19,10 @@ const (
 	// 取证 2026-10-21/22）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
 	defaultClientVersionCN     = "5.8.3"
 	defaultClientVersionGlobal = "5.8.4"
-	// defaultSlugCN / defaultSlugGlobal UA 第二段的品牌 slug（实测：CN 桌面端
-	// `workbuddy`，国际版 `workbuddy-ai`，取自 product.json productName/urlProtocol）。
-	defaultSlugCN     = "workbuddy"
+	// defaultSlugCN / defaultSlugGlobal UA 第二段的品牌段（实抓：CN 桌面端 5.8.3 为
+	// `WorkBuddy`（product.json 无 urlProtocol，回落 productName 原样）；国际版 5.8.4
+	// 为 `workbuddy-ai`（urlProtocol 原样））。
+	defaultSlugCN     = "WorkBuddy"
 	defaultSlugGlobal = "workbuddy-ai"
 	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。两个桌面端自带 CLI 均为 2.161.0
 	// （resources/app.asar.unpacked/cli `--version`）。
@@ -217,6 +218,9 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 		}
 		if d := a.DomainValue(); d != "" {
 			req.Header.Set("X-Domain", d)
+		} else {
+			// 实抓 CN 桌面端 chat 恒带 X-Domain=www.codebuddy.cn（登录域）。
+			req.Header.Set("X-Domain", "www.codebuddy.cn")
 		}
 	} else {
 		c.injectGlobalChatHeaders(req, a)
