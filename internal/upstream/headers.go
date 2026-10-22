@@ -3,6 +3,8 @@
 package upstream
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -17,6 +19,10 @@ const (
 	// 取证 2026-10-21/22）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
 	defaultClientVersionCN     = "5.8.3"
 	defaultClientVersionGlobal = "5.8.4"
+	// defaultSlugCN / defaultSlugGlobal UA 第二段的品牌 slug（实测：CN 桌面端
+	// `workbuddy`，国际版 `workbuddy-ai`，取自 product.json productName/urlProtocol）。
+	defaultSlugCN     = "workbuddy"
+	defaultSlugGlobal = "workbuddy-ai"
 	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。两个桌面端自带 CLI 均为 2.161.0
 	// （resources/app.asar.unpacked/cli `--version`）。
 	// config upstream.cli_version 可覆盖（空 = 内置默认）。
@@ -65,7 +71,11 @@ func (c *Client) cliVersion() string {
 // 显式 config cli_version 为空时不追加 CLI 段（官方仅在 platformVersion 存在时追加）。
 func (c *Client) defaultWorkBuddyUAFor(a *auth.Auth) string {
 	v := c.clientVersionFor(a)
-	ua := "WorkBuddy/" + v + " WorkBuddy/" + v
+	slug := defaultSlugCN
+	if a != nil && a.IsGlobal() {
+		slug = defaultSlugGlobal
+	}
+	ua := "WorkBuddy/" + v + " " + slug + "/" + v
 	if cli := c.cliVersion(); cli != "" {
 		ua += " CLI/" + cli
 	}
@@ -178,12 +188,11 @@ type ChatMeta struct {
 // meta 为会话头族元数据（纯新增，不改既有头），见 injectConversationHeaders。
 func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, meta ChatMeta) {
 	c.CommonHeaders(req, a)
-	// 对齐桌面端 5.8.3 的 chat 出站：Accept 恒 application/json（是否 SSE 由 body
-	// 的 stream 字段决定，applyGatewayHeaders 无条件覆盖为 json）；
-	// Accept-Encoding 显式 identity；桌面端在转发前按 denylist 剥掉 origin，
-	// Node 侧也不会产生 Referer / Accept-Language，故 chat 路径一并删除这三个头。
+	// 对齐桌面端实测 chat 出站：Accept 恒 application/json；Accept-Encoding 交给
+	// net/http 默认（gzip，且由 Transport 自动解压），不手写 identity。
+	// 桌面端转发前按 denylist 剥掉 origin，Node 侧也不产生 Referer / Accept-Language，
+	// 故 chat 路径一并删除这三个头。
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Encoding", "identity")
 	req.Header.Del("Origin")
 	req.Header.Del("Referer")
 	req.Header.Del("Accept-Language")
@@ -216,7 +225,8 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	c.injectAttribution(req, a)
 	// 客户端 IP 透传（仅 PassthroughIP=true 且本次请求带 IP）。
 	c.injectClientIP(req, clientIP)
-	// X-Device-Token 仅 auth/state 与签到路径发送（桌面端 chat 不带），此处不注入。
+	// 设备令牌：实测桌面端 chat 也带 X-Device-Token（登录时上游签发，非每号必配）。
+	c.injectDeviceToken(req, a)
 	// 会话头族（对话/请求/消息/链路），见 injectConversationHeaders。
 	c.injectConversationHeaders(req, meta)
 }
@@ -267,7 +277,9 @@ func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 	req.Header.Set("X-Conversation-Request-ID", convReqID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)
 	req.Header.Set("X-Request-ID", messageID)
-	req.Header.Set("acp-connection-id", asUUID(convReqID))
+	req.Header.Set("X-Root-Request-ID", convReqID)
+	// acp-connection-id 实测与 conversation-request-id **不同值**，按会话稳定派生。
+	req.Header.Set("acp-connection-id", asUUID(deriveHex("acp", convReqID)))
 	traceID := meta.TraceID
 	if len(traceID) != 32 || !validTraceID(traceID) {
 		traceID = session.NewMessageID()
@@ -281,6 +293,13 @@ func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 	req.Header.Set("X-B3-SpanId", spanID)
 	req.Header.Set("X-B3-Sampled", "1")
 	req.Header.Set("X-Trace-ID", traceID)
+}
+
+// deriveHex 由固定盐 + 输入派生 32 位 hex（用于 acp-connection-id 等需要与会话 ID
+// 不同的稳定标识）。
+func deriveHex(purpose, input string) string {
+	sum := sha256.Sum256([]byte("wb2a:" + purpose + ":" + input))
+	return hex.EncodeToString(sum[:16])
 }
 
 // asUUID 把 32 位 hex 渲染成 8-4-4-4-12 的 UUID 形态；其他形状原样返回。
@@ -332,7 +351,16 @@ func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	}
 	req.Header.Set("X-Agent-Intent", "craft")
 	req.Header.Set("X-Agent-Purpose", "conversation")
+	req.Header.Set("X-Agent-Type", "main")
 	req.Header.Set("X-Private-Data", "true")
+	// OpenAI SDK（stainless）指纹：实测桌面端 chat 同样携带，取实抓常量。
+	req.Header.Set("X-Stainless-Arch", "x64")
+	req.Header.Set("X-Stainless-Lang", "js")
+	req.Header.Set("X-Stainless-Os", "Windows")
+	req.Header.Set("X-Stainless-Package-Version", "6.25.0")
+	req.Header.Set("X-Stainless-Retry-Count", "0")
+	req.Header.Set("X-Stainless-Runtime", "node")
+	req.Header.Set("X-Stainless-Runtime-Version", "v22.21.1")
 	req.Header.Set("X-IDE-Name", name)
 	req.Header.Set("X-IDE-Type", name)
 	req.Header.Set("X-IDE-Version", c.clientVersionFor(a))
