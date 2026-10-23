@@ -105,19 +105,22 @@ type identityRules struct {
 	// targets 全部目标词（用于折叠 "WorkBuddy (WorkBuddy)" 这类重复）。
 	targets []string
 	count   int
-	// prefixChars 只改写指令块前 N 个字符（0 = 不限）。见 Config.ClientIdentityPrefixChars。
+	// prefixChars 每条系统提示词只扫前 N 个字符（0 = 不限，默认）。见
+	// Config.ClientIdentityPrefixChars。
 	prefixChars int
 }
 
 // clientIdentity 进程级规则集：nil = 关闭（库的零值即关闭，cmd/server 按配置安装）。
 var clientIdentity atomic.Pointer[identityRules]
 
-// DefaultClientIdentityPrefixChars 身份词默认只扫指令块前 1000 个字符。
+// DefaultClientIdentityPrefixChars 默认不设上限：**整段**系统提示词都改写。
 //
-// 依据：客户端身份声明（"You run inside X" / "You are X, ..."）总在 system prompt
-// 开头；指令块后半段更可能是客户端注入的上下文、系统提醒、甚至被引用的用户原文，
-// 改写它们等于篡改真实业务内容。0 = 不限（整段 system/developer 都改写）。
-const DefaultClientIdentityPrefixChars = 1000
+// 语义：身份词改写的作用域是「系统提示词」（system/developer 消息），不是"提示词开头"。
+// 有些客户端的身份声明不在首句（先写通用人格、再写 "You are X"），也可能分散在
+// 同一段 prompt 的多处；截断会漏改。需要限制改写深度时（例如系统提示词里夹带了
+// 用户提供的长文档），把 client_identity_prefix_chars 设成正整数即可，按字符
+// （rune）计、每条系统消息各自计数。
+const DefaultClientIdentityPrefixChars = 0
 
 // SetClientIdentity 安装出站身份词改写规则（进程级、热生效）。
 //
@@ -130,8 +133,8 @@ const DefaultClientIdentityPrefixChars = 1000
 //     "!cline"         → 从内置表移除（内置词误伤时的自救口，产品名/厂商名都适用，
 //     如 "!minimax" 只关掉厂商名 MiniMax，"!google" 关掉 Google）。
 //   - target 为空 → 回落 DefaultClientIdentityTarget；
-//   - prefixChars 是**指令块扫描上限**（字符数，0 = 不限）：只改写请求最前面连续
-//     system/developer 块的前 N 个字符，块外内容（user/assistant/tool 消息）永不改写。
+//   - prefixChars 是**每条系统提示词的扫描上限**（字符数，0 = 不限，默认）：
+//     作用域恒为 system/developer 消息，user/assistant/tool 消息永不改写。
 func SetClientIdentity(enabled bool, words []string, target string, prefixChars int) {
 	if !enabled {
 		clientIdentity.Store(nil)
@@ -194,7 +197,7 @@ func buildIdentityRules(target string, words []string, prefixChars int) *identit
 	if r.count == 0 {
 		return nil
 	}
-	// 负数无意义：回落默认上限（不静默变成"不限"——那会把保护关掉）。
+	// 负数无意义：回落默认（0 = 不限）。作用域由角色决定，不受这个值影响。
 	if prefixChars < 0 {
 		prefixChars = DefaultClientIdentityPrefixChars
 	}
@@ -368,11 +371,11 @@ func asciiLower(s string) string {
 // rewriteClientIdentity 对整份出站请求体做身份词改写。
 //
 // 覆盖面刻意收得很窄——它对齐的是「上游看到的客户端身份」，不是内容脱敏：
-//   - **只改写请求最前面连续的 system/developer 指令块**：身份声明只出现在这里
-//     （"You run inside X" / "You are X, ..."）；从第一条非 system/developer 消息
-//     起即停止，历史中的 system 提醒、user/assistant/tool 消息一律不动。
-//   - **块内也只扫前 prefixChars 个字符**（默认 1000，0 = 不限）：指令块后半段常是
-//     注入的上下文 / 系统提醒 / 被引用的用户原文，改写它们会篡改真实业务内容。
+//   - **只改写系统提示词**：role 为 system/developer 的消息（开头连续块、会话中段的
+//     system 提醒都算），**整段**默认改写（prefixChars=0）；user/assistant/tool 消息
+//     是真实业务内容（"OpenAI 兼容接口怎么配"这类讨论），永不改写。
+//   - **prefixChars > 0 时按条截断**：只扫每条系统消息的前 N 个字符（rune 计），
+//     用于系统提示词里夹带用户长文档、又不想改到文档正文的场景。
 //   - **不动** tool_calls[].function.arguments 与思维链字段：前者是模型产出的工具
 //     入参（要写入磁盘的文件内容、命令参数），后者是模型自己的推理；两者都不是
 //     身份声明，改写只会有静默的数据破坏风险。
@@ -385,26 +388,22 @@ func rewriteClientIdentity(obj map[string]any) {
 	if !ok {
 		return
 	}
-	budget := r.prefixChars // 0 = 不限
+	// 遍历全部消息，只认 system/developer：系统提示词可能不止一条（开头连续块、
+	// 会话中段的 system 提醒都是客户端指令），也可能不在首位。user/assistant/tool
+	// 是真实业务内容，一律跳过。
 	for _, msg := range msgs {
 		m, ok := msg.(map[string]any)
 		if !ok {
-			break
+			continue
 		}
 		role, _ := m["role"].(string)
 		if role != "system" && role != "developer" {
-			break // 指令块结束：之后的一切都是对话内容
+			continue
 		}
 		if c, ok := m["content"]; ok {
-			nc, changed, used := identityPrefixContent(r, c, budget)
-			if changed {
+			// 上限按**每条**系统消息计（0 = 整段），互不挤占。
+			if nc, changed, _ := identityPrefixContent(r, c, r.prefixChars); changed {
 				m["content"] = nc
-			}
-			if budget > 0 {
-				budget -= used
-				if budget <= 0 {
-					return // 上限用尽：再往后不做任何改写
-				}
 			}
 		}
 	}

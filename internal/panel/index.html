@@ -1141,9 +1141,9 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
               <label class="fld"><span class="lb">改写目标词</span>
                 <input name="client_identity_target" placeholder="留空 = WorkBuddy">
                 <span class="hint">提示词里的身份词统一改写为该词</span></label>
-              <label class="fld"><span class="lb">指令块扫描上限</span>
-                <input name="client_identity_prefix_chars" type="number" min="0" placeholder="1000">
-                <span class="hint">只改 system 块前 N 个字符；0 = 不限；对话内容从不改写</span></label>
+              <label class="fld"><span class="lb">系统提示词扫描上限</span>
+                <input name="client_identity_prefix_chars" type="number" min="0" placeholder="0">
+                <span class="hint">默认 0 = 整段系统提示词都替换；设正值只改前 N 个字符；对话内容从不改写</span></label>
             </div>
             <div class="switch"><span class="lb">会话粘性路由</span>
               <input type="checkbox" name="session_sticky_enabled"></div>

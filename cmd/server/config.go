@@ -185,11 +185,10 @@ type Config struct {
 		ClientIdentityWords []string `json:"client_identity_words"`
 		// ClientIdentityTarget 改写目标词，空 = 内置 WorkBuddy。
 		ClientIdentityTarget string `json:"client_identity_target"`
-		// ClientIdentityPrefixChars 身份词只改写出站请求最前面连续 system/developer
-		// 指令块的前 N 个字符（默认 1000）。0 = 不限（整段指令块都改写）。
-		// 上限的意义：身份声明总在指令块开头，更深的内容常是注入的上下文/系统提醒/
-		// 被引用的用户原文，改写它们会篡改真实业务内容；user/assistant/tool 消息
-		// 无论这个值多大都永不改写。
+		// ClientIdentityPrefixChars 每条系统提示词只改前 N 个字符（默认 0 = 整段都改）。
+		// 作用域恒为 system/developer 消息；user/assistant/tool 消息、工具入参、
+		// 思维链无论该值多大都不改写。设成正值仅用于"系统提示词里夹带用户长文档、
+		// 不想改到文档正文"的场景，按 rune 计、每条系统消息各自计数。
 		ClientIdentityPrefixChars int `json:"client_identity_prefix_chars"`
 	} `json:"features"`
 
@@ -333,8 +332,8 @@ func Default() *Config {
 	// 目标词缺省 WorkBuddy（normalize 里也会兜底，覆盖显式 "" 的用户配置）。
 	c.Features.RewriteClientIdentity = true
 	c.Features.ClientIdentityTarget = upstream.DefaultClientIdentityTarget
-	// 指令块扫描上限缺省 1000 字符：身份声明在 system prompt 开头，块内更深的内容
-	// 可能是被引用的用户原文；用户显式写 0 才放开为"整段指令块"。
+	// 系统提示词扫描上限缺省 0 = 整段都改写：身份声明可能不在首句，截断会漏改；
+	// 需要限制时用户显式设正值。
 	c.Features.ClientIdentityPrefixChars = upstream.DefaultClientIdentityPrefixChars
 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：透传客户端原始 system（对齐上游；custom 由用户显式选择）
 	c.Pool.Strategy = pool.RegionStrategies{Domestic: pool.WeightedRandom, International: pool.WeightedRandom}
@@ -691,8 +690,7 @@ func (c *Config) normalize() error {
 	if strings.TrimSpace(c.Features.ClientIdentityTarget) == "" {
 		c.Features.ClientIdentityTarget = upstream.DefaultClientIdentityTarget
 	}
-	// 扫描上限：负数无意义 → 回落默认 1000（不静默变成"不限"，那会把保护关掉）；
-	// 0 是合法值（不限整段指令块）。
+	// 扫描上限：负数无意义 → 回落默认 0（整段系统提示词都改写）。
 	if c.Features.ClientIdentityPrefixChars < 0 {
 		c.Features.ClientIdentityPrefixChars = upstream.DefaultClientIdentityPrefixChars
 	}

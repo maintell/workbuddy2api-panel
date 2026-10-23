@@ -876,10 +876,9 @@ func TestClientIdentityConfig(t *testing.T) {
 	if len(c.Features.ClientIdentityWords) != 0 {
 		t.Errorf("words=%v want empty（只用内置表）", c.Features.ClientIdentityWords)
 	}
-	// 指令块扫描上限缺省 1000（字符）：身份声明在 system prompt 开头，块内更深的
-	// 文本可能是业务内容；显式 0 才放开为"整段指令块"。
-	if c.Features.ClientIdentityPrefixChars != 1000 {
-		t.Errorf("prefix_chars=%d want 1000", c.Features.ClientIdentityPrefixChars)
+	// 扫描上限缺省 0 = 整段系统提示词都改写（身份声明可能不在首句，截断会漏改）。
+	if c.Features.ClientIdentityPrefixChars != 0 {
+		t.Errorf("prefix_chars=%d want 0（整段）", c.Features.ClientIdentityPrefixChars)
 	}
 
 	// 显式关闭 + 自定义词表/目标词：逐项保真。
@@ -906,20 +905,20 @@ func TestClientIdentityConfig(t *testing.T) {
 		t.Errorf("blank target=%q want WorkBuddy", blank.Features.ClientIdentityTarget)
 	}
 
-	// 上限：显式 0 = 不限（合法值，必须保留）；负数无意义 → 回落默认 1000。
-	unlimited, err := ParseConfig([]byte(`{"features":{"client_identity_prefix_chars":0}}`))
+	// 上限：显式正值原样保留；负数无意义 → 回落默认 0（整段）。
+	capped, err := ParseConfig([]byte(`{"features":{"client_identity_prefix_chars":2000}}`))
 	if err != nil {
-		t.Fatalf("parse zero prefix: %v", err)
+		t.Fatalf("parse capped prefix: %v", err)
 	}
-	if unlimited.Features.ClientIdentityPrefixChars != 0 {
-		t.Errorf("explicit 0 应为不限, got %d", unlimited.Features.ClientIdentityPrefixChars)
+	if capped.Features.ClientIdentityPrefixChars != 2000 {
+		t.Errorf("explicit 2000 应保留, got %d", capped.Features.ClientIdentityPrefixChars)
 	}
 	negative, err := ParseConfig([]byte(`{"features":{"client_identity_prefix_chars":-5}}`))
 	if err != nil {
 		t.Fatalf("parse negative prefix: %v", err)
 	}
-	if negative.Features.ClientIdentityPrefixChars != 1000 {
-		t.Errorf("负数应回落 1000, got %d", negative.Features.ClientIdentityPrefixChars)
+	if negative.Features.ClientIdentityPrefixChars != 0 {
+		t.Errorf("负数应回落 0（整段）, got %d", negative.Features.ClientIdentityPrefixChars)
 	}
 
 	// env 覆盖（容器部署只给环境变量时也要能关）。

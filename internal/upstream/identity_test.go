@@ -17,7 +17,7 @@ func setIdentityForTest(t *testing.T, enabled bool, words []string, target strin
 	setIdentityPrefixForTest(t, enabled, words, target, 0)
 }
 
-// setIdentityPrefixForTest 同上，但显式指定指令块扫描上限（0 = 不限）。
+// setIdentityPrefixForTest 同上，但显式指定每条系统提示词的扫描上限（0 = 不限）。
 func setIdentityPrefixForTest(t *testing.T, enabled bool, words []string, target string, prefixChars int) {
 	t.Helper()
 	SetClientIdentity(enabled, words, target, prefixChars)
@@ -146,7 +146,7 @@ func TestClientIdentityIdempotent(t *testing.T) {
 	}
 }
 
-// 出站 body 覆盖面：只改最前面连续 system/developer 指令块里的 content。
+// 出站 body 覆盖面：系统提示词（system/developer，含会话中段的 system 提醒）整段改写；
 // user/assistant 消息、思维链、tool_calls 参数都是真实业务内容，必须原样保留。
 func TestRewriteClientIdentityBodyScope(t *testing.T) {
 	setIdentityForTest(t, true, nil, "")
@@ -167,7 +167,7 @@ func TestRewriteClientIdentityBodyScope(t *testing.T) {
 					"arguments": `{"cmd":"cat opencode.json"}`,
 				}}},
 			},
-			// 历史中段的 system 提醒（不在开头连续块里）同样不动。
+			// 会话中段的 system 提醒：同属系统提示词，默认整段改写。
 			map[string]any{"role": "system", "content": "reminder: opencode state"},
 		},
 	}
@@ -196,15 +196,15 @@ func TestRewriteClientIdentityBodyScope(t *testing.T) {
 	if args != `{"cmd":"cat opencode.json"}` {
 		t.Errorf("tool_call arguments must not be touched: %q", args)
 	}
-	if sys := msgs[3].(map[string]any)["content"]; sys != "reminder: opencode state" {
-		t.Errorf("mid-history system message must not be rewritten: %q", sys)
+	if sys := msgs[3].(map[string]any)["content"]; sys != "reminder: WorkBuddy state" {
+		t.Errorf("会话中段的 system 提醒应被改写（所有系统提示词都算）: %q", sys)
 	}
 }
 
-// 指令块扫描上限：身份词落在前 N 个字符内才改写，块内更深的文本保持原样；
-// 0 = 不限（整段指令块）。多模态 part 共享同一份预算。
+// 扫描上限（可选）：身份词落在前 N 个字符内才改写，更深的文本保持原样；
+// 默认 0 = 整段系统提示词都改写。多模态 part 共享同一条消息的预算。
 func TestClientIdentityPrefixBudget(t *testing.T) {
-	// 默认 1000 字符：第 10 个字符处的身份词命中，第 1200 个字符处的不命中。
+	// 显式 1000 字符：第 10 个字符处的身份词命中，第 1200 个字符处的不命中。
 	setIdentityPrefixForTest(t, true, nil, "", 1000)
 	head := "You are opencode. " + strings.Repeat("x", 1200) + " opencode"
 	obj := map[string]any{"messages": []any{
@@ -281,6 +281,41 @@ func TestClientIdentityScopeDeveloperRole(t *testing.T) {
 	}
 	if got := msgs[2].(map[string]any)["content"]; got != "You are aider." {
 		t.Errorf("user 消息被改写: %q", got)
+	}
+}
+
+// 默认（prefixChars=0）整段改写：身份词在系统提示词第 3000 字符处也命中——
+// 有些客户端先写通用人格、再声明身份，截断会漏改。
+func TestClientIdentityWholeSystemPromptByDefault(t *testing.T) {
+	setIdentityPrefixForTest(t, true, nil, "", 0)
+	deep := strings.Repeat("y", 3000) + " You are opencode."
+	obj := map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": deep},
+	}}
+	rewriteClientIdentity(obj)
+	got := obj["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.HasSuffix(got, "You are WorkBuddy.") {
+		t.Errorf("默认应改写整段系统提示词: %q", got[len(got)-30:])
+	}
+}
+
+// 每条系统消息各自享有上限（互不挤占）：两条 system 都在 10 字符内命中时都改写。
+func TestClientIdentityBudgetPerMessage(t *testing.T) {
+	setIdentityPrefixForTest(t, true, nil, "", 20)
+	obj := map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": strings.Repeat("a", 5) + " opencode"},
+		map[string]any{"role": "user", "content": "hi"},
+		map[string]any{"role": "system", "content": strings.Repeat("b", 5) + " cline"},
+	}}
+	rewriteClientIdentity(obj)
+	// 两条 system 都在各自前 20 个字符内命中：改写后末尾分别是 " WorkBuddy" / " WorkBuddy"。
+	sys0, _ := obj["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.HasSuffix(sys0, " WorkBuddy") {
+		t.Errorf("第一条 system 未改写: %q", sys0)
+	}
+	sys2, _ := obj["messages"].([]any)[2].(map[string]any)["content"].(string)
+	if !strings.HasSuffix(sys2, " WorkBuddy") {
+		t.Errorf("第二条 system 未改写（预算应按条计）: %q", sys2)
 	}
 }
 
