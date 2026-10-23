@@ -5,19 +5,21 @@
 // 上游对「请求是否来自官方客户端」的判定除 header/UA 外还会看提示词里的身份词，
 // 命中后表现为 11-128 通道校验失败或内容策略拦截——与用户真实意图无关。
 //
-// 策略：把已知客户端身份词在**提示词文本**里按规则改写为目标词（默认 WorkBuddy），
-// 让出站请求与官方客户端同形；不做语义改写、不动工具调用参数（那是用户数据）。
+// 策略：把已知客户端身份词在**指令块开头的前 N 个字符**里按规则改写为目标词
+// （默认 WorkBuddy），让出站请求与官方客户端同形；对话内容、工具入参与思维链一律
+// 不动——它们承载真实业务，改写等于篡改数据。
 //
 // 与另两层的关系（三者互不替代）：
 //   - prompt（internal/prompt）：custom/append 模式整体替换/追加 system；
 //   - sanitize.go：黑名单**逐字指纹**（Claude Code / Codex 模板句、header 键名）；
-//   - 本文件：客户端**身份词**（产品名），面向"这几家客户端名会触发通道校验"。
+//   - 本文件：客户端**身份词**（产品名 + 厂商名），面向"这些客户端名会触发通道校验"。
 package upstream
 
 import (
 	"sort"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
 // DefaultClientIdentityTarget 身份词改写的缺省目标词（官方产品名）。
@@ -103,10 +105,19 @@ type identityRules struct {
 	// targets 全部目标词（用于折叠 "WorkBuddy (WorkBuddy)" 这类重复）。
 	targets []string
 	count   int
+	// prefixChars 只改写指令块前 N 个字符（0 = 不限）。见 Config.ClientIdentityPrefixChars。
+	prefixChars int
 }
 
 // clientIdentity 进程级规则集：nil = 关闭（库的零值即关闭，cmd/server 按配置安装）。
 var clientIdentity atomic.Pointer[identityRules]
+
+// DefaultClientIdentityPrefixChars 身份词默认只扫指令块前 1000 个字符。
+//
+// 依据：客户端身份声明（"You run inside X" / "You are X, ..."）总在 system prompt
+// 开头；指令块后半段更可能是客户端注入的上下文、系统提醒、甚至被引用的用户原文，
+// 改写它们等于篡改真实业务内容。0 = 不限（整段 system/developer 都改写）。
+const DefaultClientIdentityPrefixChars = 1000
 
 // SetClientIdentity 安装出站身份词改写规则（进程级、热生效）。
 //
@@ -118,17 +129,19 @@ var clientIdentity atomic.Pointer[identityRules]
 //     "cursor=WorkBuddy" / "cursor=>WorkBuddy" → 指定该词的目标；
 //     "!cline"         → 从内置表移除（内置词误伤时的自救口，产品名/厂商名都适用，
 //     如 "!minimax" 只关掉厂商名 MiniMax，"!google" 关掉 Google）。
-//   - target 为空 → 回落 DefaultClientIdentityTarget。
-func SetClientIdentity(enabled bool, words []string, target string) {
+//   - target 为空 → 回落 DefaultClientIdentityTarget；
+//   - prefixChars 是**指令块扫描上限**（字符数，0 = 不限）：只改写请求最前面连续
+//     system/developer 块的前 N 个字符，块外内容（user/assistant/tool 消息）永不改写。
+func SetClientIdentity(enabled bool, words []string, target string, prefixChars int) {
 	if !enabled {
 		clientIdentity.Store(nil)
 		return
 	}
-	clientIdentity.Store(buildIdentityRules(target, words))
+	clientIdentity.Store(buildIdentityRules(target, words, prefixChars))
 }
 
 // buildIdentityRules 编译规则集；无有效规则返回 nil。
-func buildIdentityRules(target string, words []string) *identityRules {
+func buildIdentityRules(target string, words []string, prefixChars int) *identityRules {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		target = DefaultClientIdentityTarget
@@ -181,6 +194,11 @@ func buildIdentityRules(target string, words []string) *identityRules {
 	if r.count == 0 {
 		return nil
 	}
+	// 负数无意义：回落默认上限（不静默变成"不限"——那会把保护关掉）。
+	if prefixChars < 0 {
+		prefixChars = DefaultClientIdentityPrefixChars
+	}
+	r.prefixChars = prefixChars
 	for i := range r.byFirst {
 		bucket := r.byFirst[i]
 		if len(bucket) < 2 {
@@ -349,12 +367,15 @@ func asciiLower(s string) string {
 
 // rewriteClientIdentity 对整份出站请求体做身份词改写。
 //
-// 覆盖范围刻意与 sanitizeMessages 不同：
-//   - 动 content（字符串 / 多模态数组的 text part）与思维链字段
-//     （reasoning_content / reasoning）——这些是**提示词文本**，身份声明只在其中；
-//   - **不动** tool_calls[].function.arguments：那是模型产出的工具入参（写文件的
-//     内容、命令参数、URL），改写它等于篡改用户数据，且失败是静默的（不像指纹
-//     不改必被上游拒）。identity 是外观归一，不是脱敏，收益不抵这个风险。
+// 覆盖面刻意收得很窄——它对齐的是「上游看到的客户端身份」，不是内容脱敏：
+//   - **只改写请求最前面连续的 system/developer 指令块**：身份声明只出现在这里
+//     （"You run inside X" / "You are X, ..."）；从第一条非 system/developer 消息
+//     起即停止，历史中的 system 提醒、user/assistant/tool 消息一律不动。
+//   - **块内也只扫前 prefixChars 个字符**（默认 1000，0 = 不限）：指令块后半段常是
+//     注入的上下文 / 系统提醒 / 被引用的用户原文，改写它们会篡改真实业务内容。
+//   - **不动** tool_calls[].function.arguments 与思维链字段：前者是模型产出的工具
+//     入参（要写入磁盘的文件内容、命令参数），后者是模型自己的推理；两者都不是
+//     身份声明，改写只会有静默的数据破坏风险。
 func rewriteClientIdentity(obj map[string]any) {
 	r := clientIdentity.Load()
 	if r == nil {
@@ -364,34 +385,40 @@ func rewriteClientIdentity(obj map[string]any) {
 	if !ok {
 		return
 	}
+	budget := r.prefixChars // 0 = 不限
 	for _, msg := range msgs {
 		m, ok := msg.(map[string]any)
 		if !ok {
-			continue
+			break
+		}
+		role, _ := m["role"].(string)
+		if role != "system" && role != "developer" {
+			break // 指令块结束：之后的一切都是对话内容
 		}
 		if c, ok := m["content"]; ok {
-			if nc, changed := identityContent(r, c); changed {
+			nc, changed, used := identityPrefixContent(r, c, budget)
+			if changed {
 				m["content"] = nc
 			}
-		}
-		for _, key := range [2]string{"reasoning_content", "reasoning"} {
-			if s, ok := m[key].(string); ok {
-				if ns, changed := r.rewrite(s); changed {
-					m[key] = ns
+			if budget > 0 {
+				budget -= used
+				if budget <= 0 {
+					return // 上限用尽：再往后不做任何改写
 				}
 			}
 		}
 	}
 }
 
-// identityContent 兼容字符串与多模态数组；只动 text part，image 等 part 不动。
-func identityContent(r *identityRules, v any) (any, bool) {
+// identityPrefixContent 兼容字符串与多模态数组；只动 text part，image 等 part 不动。
+// 返回改写后的值、是否变化、以及本次实际扫描的字符数（用于跨消息扣预算）。
+func identityPrefixContent(r *identityRules, v any, budget int) (any, bool, int) {
 	switch c := v.(type) {
 	case string:
-		s, changed := r.rewrite(c)
-		return s, changed
+		out, changed, used := r.rewritePrefix(c, budget)
+		return out, changed, used
 	case []any:
-		changed := false
+		changed, used := false, 0
 		for _, p := range c {
 			m, ok := p.(map[string]any)
 			if !ok {
@@ -401,12 +428,52 @@ func identityContent(r *identityRules, v any) (any, bool) {
 			if !ok {
 				continue
 			}
-			if s, ch := r.rewrite(text); ch {
-				m["text"] = s
+			left := budget
+			if budget > 0 {
+				left = budget - used
+				if left <= 0 {
+					break // 预算用尽，后续 part 不动
+				}
+			}
+			out, ch, u := r.rewritePrefix(text, left)
+			used += u
+			if ch {
+				m["text"] = out
 				changed = true
 			}
 		}
-		return c, changed
+		return c, changed, used
 	}
-	return v, false
+	return v, false, 0
+}
+
+// rewritePrefix 只改写 text 的前 limit 个字符（limit<=0 = 不限）。
+// 切分点落在 UTF-8 字符边界上，跨边界的词不匹配（预算边界优先于改写完整性）。
+func (r *identityRules) rewritePrefix(text string, limit int) (string, bool, int) {
+	if limit <= 0 {
+		out, changed := r.rewrite(text)
+		return out, changed, utf8.RuneCountInString(text)
+	}
+	cut := runeCutOffset(text, limit)
+	head, tail := text[:cut], text[cut:]
+	out, changed := r.rewrite(head)
+	if !changed {
+		return text, false, utf8.RuneCountInString(head)
+	}
+	return out + tail, true, utf8.RuneCountInString(head)
+}
+
+// runeCutOffset 返回前 n 个字符（rune）之后的字节下标；不足 n 个字符返回 len(s)。
+func runeCutOffset(s string, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return i
+		}
+		count++
+	}
+	return len(s)
 }

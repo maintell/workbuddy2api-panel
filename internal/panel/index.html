@@ -1134,13 +1134,16 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
               <input type="checkbox" name="sanitize_blacklist_fingerprints"></div>
             <div class="switch"><span class="lb">出站身份词改写（客户端名 → WorkBuddy）</span>
               <input type="checkbox" name="rewrite_client_identity"></div>
-            <div class="grid2">
+            <div class="grid3">
               <label class="fld"><span class="lb">追加身份词</span>
                 <input name="client_identity_words" placeholder="逗号分隔；a=b 指定目标，!a 移除内置词">
                 <span class="hint">内置 opencode / minimax / OpenAI 等产品名与厂商名；留空 = 只用内置表</span></label>
               <label class="fld"><span class="lb">改写目标词</span>
                 <input name="client_identity_target" placeholder="留空 = WorkBuddy">
                 <span class="hint">提示词里的身份词统一改写为该词</span></label>
+              <label class="fld"><span class="lb">指令块扫描上限</span>
+                <input name="client_identity_prefix_chars" type="number" min="0" placeholder="1000">
+                <span class="hint">只改 system 块前 N 个字符；0 = 不限；对话内容从不改写</span></label>
             </div>
             <div class="switch"><span class="lb">会话粘性路由</span>
               <input type="checkbox" name="session_sticky_enabled"></div>

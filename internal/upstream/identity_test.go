@@ -11,10 +11,17 @@ import (
 )
 
 // setIdentityForTest 安装测试用规则集并在用例结束后复位（进程级 atomic，无并行）。
+// prefixChars=0（不限）——规则本身的行为用例不受预算干扰；预算有专门用例覆盖。
 func setIdentityForTest(t *testing.T, enabled bool, words []string, target string) {
 	t.Helper()
-	SetClientIdentity(enabled, words, target)
-	t.Cleanup(func() { SetClientIdentity(false, nil, "") })
+	setIdentityPrefixForTest(t, enabled, words, target, 0)
+}
+
+// setIdentityPrefixForTest 同上，但显式指定指令块扫描上限（0 = 不限）。
+func setIdentityPrefixForTest(t *testing.T, enabled bool, words []string, target string, prefixChars int) {
+	t.Helper()
+	SetClientIdentity(enabled, words, target, prefixChars)
+	t.Cleanup(func() { SetClientIdentity(false, nil, "", 0) })
 }
 
 // 内置词表：第三方客户端身份词改写为目标词，语义不变、大小写不敏感。
@@ -120,7 +127,7 @@ func TestClientIdentityDisabledNoop(t *testing.T) {
 	if got, changed := (*identityRules)(nil).rewrite(in); changed || got != in {
 		t.Errorf("nil rules must be a no-op: %q changed=%v", got, changed)
 	}
-	obj := map[string]any{"messages": []any{map[string]any{"role": "user", "content": in}}}
+	obj := map[string]any{"messages": []any{map[string]any{"role": "system", "content": in}}}
 	rewriteClientIdentity(obj)
 	msgs := obj["messages"].([]any)
 	if got := msgs[0].(map[string]any)["content"]; got != in {
@@ -139,8 +146,8 @@ func TestClientIdentityIdempotent(t *testing.T) {
 	}
 }
 
-// 出站 body 覆盖面：content（字符串/多模态 part）与思维链字段改写；
-// tool_calls 参数是用户数据，保持原样。
+// 出站 body 覆盖面：只改最前面连续 system/developer 指令块里的 content。
+// user/assistant 消息、思维链、tool_calls 参数都是真实业务内容，必须原样保留。
 func TestRewriteClientIdentityBodyScope(t *testing.T) {
 	setIdentityForTest(t, true, nil, "")
 	obj := map[string]any{
@@ -160,33 +167,120 @@ func TestRewriteClientIdentityBodyScope(t *testing.T) {
 					"arguments": `{"cmd":"cat opencode.json"}`,
 				}}},
 			},
+			// 历史中段的 system 提醒（不在开头连续块里）同样不动。
+			map[string]any{"role": "system", "content": "reminder: opencode state"},
 		},
 	}
 	rewriteClientIdentity(obj)
 
 	msgs := obj["messages"].([]any)
-	sys := msgs[0].(map[string]any)["content"]
-	if sys != "You are WorkBuddy." {
+	if sys := msgs[0].(map[string]any)["content"]; sys != "You are WorkBuddy." {
 		t.Errorf("system content not rewritten: %q", sys)
 	}
 	parts := msgs[1].(map[string]any)["content"].([]any)
-	if got := parts[0].(map[string]any)["text"]; got != "用 WorkBuddy 跑" {
-		t.Errorf("text part not rewritten: %q", got)
+	if got := parts[0].(map[string]any)["text"]; got != "用 minimax code 跑" {
+		t.Errorf("user text part must not be rewritten: %q", got)
 	}
 	img := parts[1].(map[string]any)["image_url"].(map[string]any)["url"]
 	if img != "opencode.png" {
 		t.Errorf("image part must not be touched: %q", img)
 	}
 	asst := msgs[2].(map[string]any)
-	if asst["reasoning_content"] != "thinking about WorkBuddy" {
-		t.Errorf("reasoning_content not rewritten: %q", asst["reasoning_content"])
+	if asst["reasoning_content"] != "thinking about opencode" {
+		t.Errorf("reasoning_content must not be rewritten: %q", asst["reasoning_content"])
 	}
-	if asst["reasoning"] != "WorkBuddy plan" {
-		t.Errorf("reasoning not rewritten: %q", asst["reasoning"])
+	if asst["reasoning"] != "cline plan" {
+		t.Errorf("reasoning must not be rewritten: %q", asst["reasoning"])
 	}
 	args := asst["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)["arguments"]
 	if args != `{"cmd":"cat opencode.json"}` {
 		t.Errorf("tool_call arguments must not be touched: %q", args)
+	}
+	if sys := msgs[3].(map[string]any)["content"]; sys != "reminder: opencode state" {
+		t.Errorf("mid-history system message must not be rewritten: %q", sys)
+	}
+}
+
+// 指令块扫描上限：身份词落在前 N 个字符内才改写，块内更深的文本保持原样；
+// 0 = 不限（整段指令块）。多模态 part 共享同一份预算。
+func TestClientIdentityPrefixBudget(t *testing.T) {
+	// 默认 1000 字符：第 10 个字符处的身份词命中，第 1200 个字符处的不命中。
+	setIdentityPrefixForTest(t, true, nil, "", 1000)
+	head := "You are opencode. " + strings.Repeat("x", 1200) + " opencode"
+	obj := map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": head},
+	}}
+	rewriteClientIdentity(obj)
+	got := obj["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.HasPrefix(got, "You are WorkBuddy. ") {
+		t.Errorf("身份词（预算内）未被改写: %q", got[:40])
+	}
+	if !strings.HasSuffix(got, " opencode") {
+		t.Errorf("预算外的身份词不应被改写: %q", got[len(got)-40:])
+	}
+
+	// 预算 0 = 不限：两处都改写。
+	setIdentityPrefixForTest(t, true, nil, "", 0)
+	obj = map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": head},
+	}}
+	rewriteClientIdentity(obj)
+	got = obj["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.HasSuffix(got, " WorkBuddy") {
+		t.Errorf("上限 0 应改写整段: %q", got[len(got)-40:])
+	}
+
+	// 多模态 part：第一个 part 用掉一半预算，第二个 part 的头部仍可命中。
+	setIdentityPrefixForTest(t, true, nil, "", 30)
+	obj = map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": []any{
+			map[string]any{"type": "text", "text": "opencode first part"},
+			map[string]any{"type": "text", "text": "opencode second part"},
+		}},
+	}}
+	rewriteClientIdentity(obj)
+	parts := obj["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	if p0 := parts[0].(map[string]any)["text"]; p0 != "WorkBuddy first part" {
+		t.Errorf("part0 未被改写: %q", p0)
+	}
+	// 预算 30 已在 part0（19 字符）后剩 11：part1 只能扫前 11 个字符，"opencode" 仍在内。
+	if p1 := parts[1].(map[string]any)["text"]; p1 != "WorkBuddy second part" {
+		t.Errorf("part1 预算内未被改写: %q", p1)
+	}
+}
+
+// 预算按字符（rune）计，中文占 1 个字符：1000 字符预算内的中文身份词照样命中。
+func TestClientIdentityPrefixBudgetRunes(t *testing.T) {
+	setIdentityPrefixForTest(t, true, nil, "", 100)
+	head := strings.Repeat("中", 80) + " 用 opencode 写"
+	obj := map[string]any{"messages": []any{
+		map[string]any{"role": "system", "content": head},
+	}}
+	rewriteClientIdentity(obj)
+	got := obj["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.HasSuffix(got, "用 WorkBuddy 写") {
+		t.Errorf("中文场景预算计算错误: %q", got[len(got)-30:])
+	}
+}
+
+// developer 角色同样属于指令块；出现非指令消息即停止。
+func TestClientIdentityScopeDeveloperRole(t *testing.T) {
+	setIdentityForTest(t, true, nil, "")
+	obj := map[string]any{"messages": []any{
+		map[string]any{"role": "developer", "content": "You are cline."},
+		map[string]any{"role": "system", "content": "You are windsurf."},
+		map[string]any{"role": "user", "content": "You are aider."},
+	}}
+	rewriteClientIdentity(obj)
+	msgs := obj["messages"].([]any)
+	if got := msgs[0].(map[string]any)["content"]; got != "You are WorkBuddy." {
+		t.Errorf("developer content not rewritten: %q", got)
+	}
+	if got := msgs[1].(map[string]any)["content"]; got != "You are WorkBuddy." {
+		t.Errorf("连续 system 块内的第二条未改写: %q", got)
+	}
+	if got := msgs[2].(map[string]any)["content"]; got != "You are aider." {
+		t.Errorf("user 消息被改写: %q", got)
 	}
 }
 
@@ -205,8 +299,9 @@ func TestPrepareBodyRewritesClientIdentity(t *testing.T) {
 	if got := msgs[0].(map[string]any)["content"]; got != "You are WorkBuddy, the coding agent." {
 		t.Errorf("system not rewritten on wire: %q", got)
 	}
-	if got := msgs[1].(map[string]any)["content"]; got != "用 WorkBuddy 跑一下" {
-		t.Errorf("user content not rewritten on wire: %q", got)
+	// 用户业务内容不参与改写（这是本层的安全边界，不是遗漏）。
+	if got := msgs[1].(map[string]any)["content"]; got != "用 minimax code 跑一下" {
+		t.Errorf("user content must not be rewritten on wire: %q", got)
 	}
 	if obj["stream"] != true {
 		t.Error("stream not forced")
@@ -338,7 +433,7 @@ func TestChatStreamWireBodyClientIdentityRewritten(t *testing.T) {
 		t.Errorf("wire system lost the config path: %q", sys)
 	}
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	if user != "用 WorkBuddy 跑一下" {
-		t.Errorf("wire user content not rewritten: %q", user)
+	if user != "用 minimax code 跑一下" {
+		t.Errorf("wire user content must not be rewritten: %q", user)
 	}
 }

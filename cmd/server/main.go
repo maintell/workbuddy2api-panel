@@ -32,7 +32,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.15.1-panel"
+const appVersion = "1.15.2-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -153,9 +153,11 @@ func main() {
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second
 	up.SanitizeFingerprints.Store(cfg.Features.SanitizeBlacklistFingerprints)
 	// 出站身份词改写（identity.go）：第三方客户端名（opencode / minimax code …）
-	// 在提示词文本里改写为 WorkBuddy。进程级规则集，面板保存后热替换。
+	// 在请求最前面的 system/developer 指令块里改写为 WorkBuddy。进程级规则集，
+	// 面板保存后热替换；prefixChars 限定只扫指令块前 N 个字符（0 = 不限）。
 	upstream.SetClientIdentity(cfg.Features.RewriteClientIdentity,
-		cfg.Features.ClientIdentityWords, cfg.Features.ClientIdentityTarget)
+		cfg.Features.ClientIdentityWords, cfg.Features.ClientIdentityTarget,
+		cfg.Features.ClientIdentityPrefixChars)
 	// 出站 UA 与归属头（issue #42 + 上游同步）：
 	// UserAgent 非空则完全覆盖；ClientVersion/CliVersion 缺省对齐官方形态；
 	// ClientName 非空时 chat 路径注入 X-IDE-* 四头（用量归因对齐官方桌面端）。
@@ -535,7 +537,8 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
 	// 身份词改写热生效：规则集整体重建（Build 期编译，运行期只读快照）。
 	upstream.SetClientIdentity(newCfg.Features.RewriteClientIdentity,
-		newCfg.Features.ClientIdentityWords, newCfg.Features.ClientIdentityTarget)
+		newCfg.Features.ClientIdentityWords, newCfg.Features.ClientIdentityTarget,
+		newCfg.Features.ClientIdentityPrefixChars)
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)

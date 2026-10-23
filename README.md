@@ -76,7 +76,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 🔍 **联网搜索** | `POST /v1/search/messages` 把上游 `/agenttool/v1/search` 包成 Anthropic Messages 兼容形态（DSH 等客户端的搜索 provider 零改动接入）；复用账号池选号 / 在途租约 / token 刷新 / 错误冷却，出站请求头对齐官方客户端 |
 | 💬 **系统提示词体系** | 网关自有提示词替换客户端 system（默认 `custom`），从源头消灭 system 来源的内容误报；`passthrough` 遇拦截自动降级重试 |
 | 🗑️ **指纹脱敏** | 出站请求体黑名单指纹字段清洗（可关闭），与提示词体系两层叠加 |
-| 🎭 **身份词改写** | 出站提示词里的第三方客户端名（`opencode` / `minimax code` / `cline` …）按规则改写为 `WorkBuddy`——上游看到的是官方客户端身份；词表与目标词可配，默认开 |
+| 🎭 **身份词改写** | 请求最前面 system/developer 指令块里的第三方客户端名与厂商名（`opencode` / `minimax code` / `minimax` …）按规则改写为 `WorkBuddy`——上游看到的是官方客户端身份；只扫指令块前 1000 字符，对话内容一律不动 |
 | 📊 **可观测** | 每请求一行表格日志（TTFB / token 速率 / uid）；`/healthz` 带 `service` 身份标识可接负载均衡 / 宿主探活 |
 | 💾 **状态持久化** | 池状态本地原子落盘 + Upstash Redis 异步镜像（可选），重启择新恢复 |
 | 🖥️ **Web 管理面板** | 内嵌单页面板（明暗主题，七个视图）：账号运维 / 用量与积分分析 / 模型档位条件查询 / 在线改配置（热生效）/ 运行日志（含**调用来源 IP·UA** 与时间区间）/ 积分任务，见 [Web 管理面板](#-web-管理面板) |
@@ -404,6 +404,7 @@ curl -s http://localhost:7863/v1/search/messages \
 | `features.rewrite_client_identity` | `true` | 出站请求体**客户端身份词改写**：提示词文本（content / reasoning）里的第三方客户端名改写为 `client_identity_target`，让上游看到的客户端身份与官方一致；独立于指纹脱敏，面板保存后热生效 |
 | `features.client_identity_words` | `[]` | 追加 / 移除身份词（大小写不敏感）：`"cursor"` 追加（目标 = 下面的目标词）；`"cursor=Claude Code"`（`=>` 同义）为该词单独指定目标；`"!cline"` 从内置表移除（内置词误伤时的自救口）。内置表见 [身份词改写](#身份词改写客户端名--workbuddy) |
 | `features.client_identity_target` | `WorkBuddy` | 身份词改写目标词；留空 = 内置 `WorkBuddy` |
+| `features.client_identity_prefix_chars` | `1000` | 身份词只改写请求**最前面连续 system/developer 指令块**的前 N 个字符（按 rune 计）；`0` = 不限（整段指令块）。user / assistant / tool 消息无论该值多大都永不改写，`tool_calls` 参数与思维链字段同样不动 |
 | `models.hidden` | `[]` | 模型黑名单：不对外暴露的模型。裸名=两域都藏；`"cn:xxx"`/`"global:xxx"`=只藏该域。`GET /v1/models` 列表过滤 + `POST /v1/chat/completions` 点名拒绝（400 `model_unavailable`）。面板保存后热生效 |
 | `prompt.mode` | `custom` | 系统提示词模式：`custom` = 网关用自有提示词替换客户端 system；`append` = 开头连续 system/developer 块后插网关提示词（既有消息逐字不动）；`passthrough` = 透传客户端原始 system（降级重试仍切中性提示词） |
 | `prompt.file` | 空 | 提示词文件路径；空 = 内置默认（约 2KB）；路径非空但不可读 → 启动报错 |
@@ -443,7 +444,7 @@ curl -s http://localhost:7863/v1/search/messages \
 
 加载顺序：JSON 文件 → `WB2A_*` 环境变量（变量非空才覆盖）：
 
-`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_DNS`(逗号分隔多个) · `WB2A_MAX_BODY_MB` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_REWRITE_CLIENT_IDENTITY`(bool) · `WB2A_CLIENT_IDENTITY_TARGET` · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE`
+`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_DNS`(逗号分隔多个) · `WB2A_MAX_BODY_MB` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_REWRITE_CLIENT_IDENTITY`(bool) · `WB2A_CLIENT_IDENTITY_TARGET` · `WB2A_CLIENT_IDENTITY_PREFIX_CHARS`(int) · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE`
 
 ## 核心行为语义
 
@@ -465,11 +466,12 @@ curl -s http://localhost:7863/v1/search/messages \
 
 ### 身份词改写（客户端名 → WorkBuddy）
 
-第三方 coding agent（OpenCode / MiniMax Code / Cline …）会在 system prompt 里声明身份（`You are opencode, an AI coding agent.`），并随历史消息一路带进出站请求。上游据此判定「非官方客户端」，表现为 11-128 通道校验失败或内容策略拦截——与用户真实意图无关。`features.rewrite_client_identity`（默认开）在出站前把这些**产品名**按规则改写为目标词（`features.client_identity_target`，默认 `WorkBuddy`）：
+第三方 coding agent（OpenCode / MiniMax Code / Cline …）会在 system prompt 里声明身份（`You are opencode, an AI coding agent.` / `You run inside MiniMax Code, a workspace developed by MiniMax.`），上游据此判定「非官方客户端」，表现为 11-128 通道校验失败或内容策略拦截——与用户真实意图无关。`features.rewrite_client_identity`（默认开）在出站前把这些**产品名与厂商名**按规则改写为目标词（`features.client_identity_target`，默认 `WorkBuddy`）：
 
-- **覆盖**：`messages[].content`（字符串 / 多模态 `text` part）与 `reasoning_content` / `reasoning`，即提示词文本
-- **不覆盖**：`tool_calls[].function.arguments`——那是模型产出的工具入参（要写入磁盘的文件内容、命令参数），改写等于篡改用户数据，且失败是静默的
-- **边界**：ASCII 大小写不敏感、长词优先；`opencode.json` / `@opencode/plugin` / `opencode_plugin` / `minimax-code` 这类**路径与包名保持原样**（右侧点号只在紧跟字母数字时才视为粘连，句末句号照常命中）；`WorkBuddy (WorkBuddy)` 这类重复会折叠成一次
+- **覆盖**：仅**请求最前面连续的 system / developer 指令块**（`messages[0]` 起直到第一条非指令消息），且只扫该块前 `features.client_identity_prefix_chars` 个字符（默认 1000，`0` = 不限）
+- **不覆盖**：user / assistant / tool 消息与思维链字段（`reasoning_content` / `reasoning`）——那是真实业务内容；`tool_calls[].function.arguments` 是模型产出的工具入参（要写入磁盘的文件内容、命令参数），改写等于篡改用户数据且失败是静默的；指令块 1000 字符之后的文本（更可能是注入的上下文 / 系统提醒 / 被引用的用户原文）
+- **为什么按角色 + 字符上限双保险**：身份声明总在 system prompt 开头，而"OpenAI 兼容接口怎么配"这类讨论发生在 user 消息里——按角色切分挡住绝大部分误伤，字符上限再挡住"指令块里夹带用户原文"的少量形态
+- **边界**：ASCII 大小写不敏感、长词优先；`opencode.json` / `@opencode/plugin` / `opencode_plugin` / `minimax-code` 这类**路径与包名保持原样**（右侧点号只在紧跟字母数字时才视为粘连，句末句号照常命中）；`WorkBuddy (WorkBuddy)` 这类重复会折叠成一次；字符预算按 **rune** 计（一个汉字算 1）
 - **内置产品名**：`opencode` · `minimax code` · `mcode` · `qwen code` · `gemini cli` · `copilot cli` · `github copilot` · `roo code` · `kilo code` · `cline` · `aider` · `windsurf` · `kiro` · `iflow` · `qoder` · `trae` · `lingma` · `comate` · `codegeex` · `marscode` · `通义灵码` · `文心快码`
 - **内置厂商名**（服务端检测同样把厂商当身份信号）：`minimax` · `anthropic` · `openai` · `google` · `deepseek` · `moonshot` · `alibaba` · `bytedance` · `baidu` · `mistral`——`You run inside MiniMax Code, a workspace developed by MiniMax.` 会被整句洗成 `You run inside WorkBuddy, a workspace developed by WorkBuddy.`
 - **逃生门**：厂商名在用户对话里也可能是正常讨论对象（"OpenAI 兼容接口怎么配"），被误伤时用 `!词` 单独关掉（如 `!google`），无需整套关闭；`!minimax` 只关厂商名规则，不影响 `minimax code`

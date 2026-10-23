@@ -1156,6 +1156,7 @@ const CFG_MAP = {
   rewrite_client_identity: ['features', 'rewrite_client_identity'],
   client_identity_words: ['features', 'client_identity_words'],
   client_identity_target: ['features', 'client_identity_target'],
+  client_identity_prefix_chars: ['features', 'client_identity_prefix_chars'],
   session_sticky_enabled: ['session_sticky', 'enabled'],
   request_client_info: ['logging', 'request_client_info'],
 };
