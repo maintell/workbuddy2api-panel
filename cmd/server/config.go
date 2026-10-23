@@ -180,7 +180,8 @@ type Config struct {
 		// ClientIdentityWords 追加/移除的身份词（大小写不敏感）。三种写法：
 		// "cursor" → 追加，目标 = ClientIdentityTarget；
 		// "cursor=WorkBuddy" / "cursor=>WorkBuddy" → 指定该词目标；
-		// "!cline" → 从内置表移除（内置词误伤时的自救口）。
+		// "!minimax" / "!google" → 从内置表移除（内置词误伤时的自救口；
+		// 产品名与厂商名都适用，"!minimax" 只关厂商名、不影响 "minimax code"）。
 		ClientIdentityWords []string `json:"client_identity_words"`
 		// ClientIdentityTarget 改写目标词，空 = 内置 WorkBuddy。
 		ClientIdentityTarget string `json:"client_identity_target"`

@@ -470,9 +470,11 @@ curl -s http://localhost:7863/v1/search/messages \
 - **覆盖**：`messages[].content`（字符串 / 多模态 `text` part）与 `reasoning_content` / `reasoning`，即提示词文本
 - **不覆盖**：`tool_calls[].function.arguments`——那是模型产出的工具入参（要写入磁盘的文件内容、命令参数），改写等于篡改用户数据，且失败是静默的
 - **边界**：ASCII 大小写不敏感、长词优先；`opencode.json` / `@opencode/plugin` / `opencode_plugin` / `minimax-code` 这类**路径与包名保持原样**（右侧点号只在紧跟字母数字时才视为粘连，句末句号照常命中）；`WorkBuddy (WorkBuddy)` 这类重复会折叠成一次
-- **内置词表**：`opencode` · `minimax code` · `mcode` · `qwen code` · `gemini cli` · `copilot cli` · `roo code` · `kilo code` · `cline` · `aider` · `windsurf` · `kiro` · `iflow` · `qoder` · `trae` · `lingma` · `comate` · `codegeex` · `marscode` · `通义灵码` · `文心快码`
-- **刻意不收**：厂商名（`minimax` / `anthropic` / `openai`，用户对话里的正常讨论对象）；英文常用词（`cursor` / `continue` / `amp` / `goose` / `droid` / `crush` / `zed`，会被 `set the cursor` 之类误伤）；`Claude Code` / `Codex`（逐字指纹已由指纹脱敏层「只改一词」处理，整词替换反而抹掉上游认得的句子）
-- **自定义**：`features.client_identity_words` 支持 `cursor`（追加）/ `cursor=Claude Code`（单独指定目标，`=>` 同义）/ `!cline`（从内置表移除），改配置即可，面板保存后热生效
+- **内置产品名**：`opencode` · `minimax code` · `mcode` · `qwen code` · `gemini cli` · `copilot cli` · `github copilot` · `roo code` · `kilo code` · `cline` · `aider` · `windsurf` · `kiro` · `iflow` · `qoder` · `trae` · `lingma` · `comate` · `codegeex` · `marscode` · `通义灵码` · `文心快码`
+- **内置厂商名**（服务端检测同样把厂商当身份信号）：`minimax` · `anthropic` · `openai` · `google` · `deepseek` · `moonshot` · `alibaba` · `bytedance` · `baidu` · `mistral`——`You run inside MiniMax Code, a workspace developed by MiniMax.` 会被整句洗成 `You run inside WorkBuddy, a workspace developed by WorkBuddy.`
+- **逃生门**：厂商名在用户对话里也可能是正常讨论对象（"OpenAI 兼容接口怎么配"），被误伤时用 `!词` 单独关掉（如 `!google`），无需整套关闭；`!minimax` 只关厂商名规则，不影响 `minimax code`
+- **刻意不收**：英文常用词（`cursor` / `continue` / `amp` / `goose` / `droid` / `crush` / `zed`，会被 `set the cursor` 之类误伤）；`Claude Code` / `Codex`（逐字指纹已由指纹脱敏层「只改一词」处理，整词替换反而抹掉上游认得的句子）；模型名 `claude` / `gpt` / `gemini` / `qwen`（同上；带连字符的模型 id 也被词边界天然保护）
+- **自定义**：`features.client_identity_words` 支持 `cursor`（追加）/ `cursor=Claude Code`（单独指定目标，`=>` 同义）/ `!cline`（从内置表移除，产品名与厂商名都适用），改配置即可，面板保存后热生效
 
 ### 内容拦截误报与降级重试
 

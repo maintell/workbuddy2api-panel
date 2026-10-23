@@ -243,6 +243,59 @@ func TestClientIdentityTargetRoundTrip(t *testing.T) {
 	}
 }
 
+// 厂商名同样改写：服务端检测不只看产品名，"developed by MiniMax" / "led by OpenAI"
+// 这类固定句式里的厂商名也是身份信号（用户实测 MiniMax Code 的 persona 提示词就长这样）。
+func TestClientIdentityRewriteVendors(t *testing.T) {
+	setIdentityForTest(t, true, nil, "")
+	r := clientIdentity.Load()
+	cases := []struct{ in, want string }{
+		{
+			"You run inside MiniMax Code, a workspace developed by MiniMax.",
+			"You run inside WorkBuddy, a workspace developed by WorkBuddy.",
+		},
+		{"Anthropic's official CLI tool for Claude.", "WorkBuddy's official CLI tool for Claude."},
+		{"open source project led by OpenAI.", "open source project led by WorkBuddy."},
+		{"powered by Google DeepMind", "powered by WorkBuddy DeepMind"},
+	}
+	for _, c := range cases {
+		if got, _ := r.rewrite(c.in); got != c.want {
+			t.Errorf("rewrite(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// 域名/包名形态仍然受保护（厂商名更容易出现在 URL 里）。
+	for _, in := range []string{"api.openai.com", "google.com", "docs.anthropic.com", "openai-node"} {
+		if got, changed := r.rewrite(in); changed || got != in {
+			t.Errorf("rewrite(%q) = %q，域名/包名不应被改写", in, got)
+		}
+	}
+}
+
+// "!词" 可单独关掉某个厂商名：产品名规则仍独立生效（"minimax code" 不受影响）。
+func TestClientIdentityVendorOptOut(t *testing.T) {
+	setIdentityForTest(t, true, []string{"!minimax"}, "")
+	r := clientIdentity.Load()
+	if got, _ := r.rewrite("developed by MiniMax"); got != "developed by MiniMax" {
+		t.Errorf("!minimax 未移除厂商名: %q", got)
+	}
+	// 产品名 "minimax code" 是另一条规则，仍按最长匹配命中。
+	if got, _ := r.rewrite("run inside MiniMax Code"); got != "run inside WorkBuddy" {
+		t.Errorf("!minimax 误伤了产品名规则: %q", got)
+	}
+	// 其他厂商名不受影响。
+	if got, _ := r.rewrite("led by OpenAI"); got != "led by WorkBuddy" {
+		t.Errorf("其它厂商名被连带移除: %q", got)
+	}
+
+	setIdentityForTest(t, true, []string{"!google"}, "")
+	r = clientIdentity.Load()
+	if got, _ := r.rewrite("search on Google"); got != "search on Google" {
+		t.Errorf("!google 未移除厂商名: %q", got)
+	}
+	if got, _ := r.rewrite("developed by MiniMax"); got != "developed by WorkBuddy" {
+		t.Errorf("!google 误伤了其他厂商: %q", got)
+	}
+}
+
 // 出站边界集成：ChatStream 发往上游的 wire body 里，第三方客户端身份词必须已改写。
 // 与 sanitize 的 wire 测试同口径——真实客户端（opencode 类）的 system prompt 就长这样。
 func TestChatStreamWireBodyClientIdentityRewritten(t *testing.T) {

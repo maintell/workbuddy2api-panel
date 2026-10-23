@@ -25,16 +25,17 @@ const DefaultClientIdentityTarget = "WorkBuddy"
 
 // defaultClientIdentityWords 内置身份词表（大小写不敏感）。
 //
-// 收录口径（三条都是踩过坑之后的边界，不是随手列的）：
-//  1. 只收**产品名**，不收厂商名：minimax / anthropic / openai 之类在用户对话里是
-//     正常讨论对象（"MiniMax 的模型贵不贵"），改写只会污染语义；
-//  2. 只收**唯一性够强**的词：cursor / amp / goose / droid / continue / crush 这些
+// 产品名收录口径（三条都是踩过坑之后的边界，不是随手列的）：
+//  1. 只收**唯一性够强**的产品名：cursor / amp / goose / droid / continue / crush 这些
 //     英文常用词不进内置表（"set the cursor"、"continue reading" 会被误改写），
 //     需要时由 features.client_identity_words 显式追加；
+//  2. 厂商名另表（见 defaultClientIdentityVendors）：服务端检测不只看产品名，
+//     "a workspace developed by MiniMax" 里的厂商名同样是身份信号；
 //  3. Claude Code / Codex 不进内置表：它们的逐字指纹已由 sanitize.go 精细改写
 //     （只改一个词、保留可读性），在这里再整词替换会把上游"认得、只需微调"的句子
-//     抹掉，也会和 sanitize 的既有断言打架
-//     （见 TestChatStreamWireBodyCodexInstructionsSanitized）。
+//     抹掉，也会和 sanitize 的既有断言打架（见 TestChatStreamWireBodyCodexInstructionsSanitized）。
+//     同理不收 "claude"/"gpt"/"gemini"/"qwen" 这类**模型名**：它们出现在
+//     sanitize 改写的句子里（"official CLI tool for Claude"），整词替换会让该层失效。
 var defaultClientIdentityWords = []string{
 	"opencode",
 	"minimax code",
@@ -42,6 +43,7 @@ var defaultClientIdentityWords = []string{
 	"qwen code",
 	"gemini cli",
 	"copilot cli",
+	"github copilot",
 	"roo code",
 	"kilo code",
 	"cline",
@@ -57,6 +59,34 @@ var defaultClientIdentityWords = []string{
 	"marscode",
 	"通义灵码",
 	"文心快码",
+}
+
+// defaultClientIdentityVendors 内置**厂商名**表（大小写不敏感，与产品名共用目标词）。
+//
+// 为什么单独成表：服务端检测"非官方客户端"不只看产品名——"You run inside MiniMax
+// Code, a workspace developed by MiniMax." 里产品名被改写后，剩下的 "MiniMax" 仍是
+// 身份信号；Anthropic / OpenAI / Google 同理（官方 prompt 里 "developed by X"、
+// "led by X" 是固定句式）。
+//
+// 风险与逃生门：厂商名在用户对话里也可能是**正常讨论对象**（"OpenAI 兼容接口怎么配"），
+// 因此这一组必然比产品名更激进——用 features.client_identity_words 里的 "!词"
+// 可以单个关掉（如 "!google"），不必整套关闭。路径/域名形态（api.openai.com、
+// google.com）由词边界规则保护，不会被改。
+//
+// 刻意不收的厂商名：tencent / codebuddy（上游自家产品线，官方客户端就该长这样）、
+// meta / x / apple（英文常用词或歧义太大）、以及所有中文厂商名（"百度一下" 之类
+// 日常表达误伤面远大于收益）。
+var defaultClientIdentityVendors = []string{
+	"minimax",
+	"anthropic",
+	"openai",
+	"google",
+	"deepseek",
+	"moonshot",
+	"alibaba",
+	"bytedance",
+	"baidu",
+	"mistral",
 }
 
 // identityRule 单条改写规则：from 已 ASCII 小写，to 原样输出。
@@ -81,11 +111,13 @@ var clientIdentity atomic.Pointer[identityRules]
 // SetClientIdentity 安装出站身份词改写规则（进程级、热生效）。
 //
 //   - enabled=false 或有效规则为空 → 关闭（置 nil，管线零成本退出）；
-//   - words 为空 = 只用内置表；非空 = 内置表 ∪ 自定义词（面板追客户端名不必等发版）；
+//   - words 为空 = 只用内置表（产品名 + 厂商名）；非空 = 内置表 ∪ 自定义词
+//     （面板追客户端名不必等发版）；
 //   - 单条 words 支持三种写法：
 //     "opencode"       → 追加一个身份词，目标 = target；
 //     "cursor=WorkBuddy" / "cursor=>WorkBuddy" → 指定该词的目标；
-//     "!cline"         → 从内置表移除（内置词误伤时的自救口）。
+//     "!cline"         → 从内置表移除（内置词误伤时的自救口，产品名/厂商名都适用，
+//     如 "!minimax" 只关掉厂商名 MiniMax，"!google" 关掉 Google）。
 //   - target 为空 → 回落 DefaultClientIdentityTarget。
 func SetClientIdentity(enabled bool, words []string, target string) {
 	if !enabled {
@@ -101,8 +133,12 @@ func buildIdentityRules(target string, words []string) *identityRules {
 	if target == "" {
 		target = DefaultClientIdentityTarget
 	}
-	pairs := make(map[string]string, len(defaultClientIdentityWords)+len(words))
+	pairs := make(map[string]string, len(defaultClientIdentityWords)+len(defaultClientIdentityVendors)+len(words))
 	for _, w := range defaultClientIdentityWords {
+		pairs[asciiLower(w)] = target
+	}
+	// 厂商名默认同样并入（服务端检测把它们也算身份信号）；"!词" 可单独移除。
+	for _, w := range defaultClientIdentityVendors {
 		pairs[asciiLower(w)] = target
 	}
 	for _, raw := range words {
