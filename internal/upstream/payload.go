@@ -2,6 +2,7 @@
 //  1. 强制 stream:true（上游拒绝非流式）
 //  2. tool_choice 归一化（上游该字段是 string，对象形式会 400 code=11101）
 //  3. image_url 归一化（上游只认 OpenAI 对象形态，字符串会 400 code=11101）
+//  4. 客户端身份词改写（identity.go：opencode / minimax code → WorkBuddy）
 package upstream
 
 import (
@@ -85,6 +86,11 @@ func PrepareBodyOptWithEffortsAndDefault(src []byte, sanitize bool, efforts map[
 			sanitizeMessages(msgs)
 		}
 	}
+	// 客户端身份词改写（identity.go）：opencode / minimax code 这类第三方客户端名
+	// 在提示词文本里改写为 WorkBuddy。独立于 sanitize 开关与提示词模式——它对齐的
+	// 是「上游看到的客户端身份」，不是黑名单指纹。放在最后一步：sanitize 可能改写
+	// 句子，身份词归一应该在最终文本上做。
+	rewriteClientIdentity(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return src

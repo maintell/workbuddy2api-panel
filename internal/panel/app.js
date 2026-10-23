@@ -1153,6 +1153,9 @@ const CFG_MAP = {
   idle_timeout_seconds: ['upstream', 'idle_timeout_seconds'], user_agent: ['upstream', 'user_agent'],
   prompt_mode: ['prompt', 'mode'], prompt_file: ['prompt', 'file'],
   sanitize_blacklist_fingerprints: ['features', 'sanitize_blacklist_fingerprints'],
+  rewrite_client_identity: ['features', 'rewrite_client_identity'],
+  client_identity_words: ['features', 'client_identity_words'],
+  client_identity_target: ['features', 'client_identity_target'],
   session_sticky_enabled: ['session_sticky', 'enabled'],
   request_client_info: ['logging', 'request_client_info'],
 };
@@ -1167,7 +1170,7 @@ const CFG_MAP = {
  * 刻意不含 api_key：清空它 = 关闭整个鉴权，误触代价是网关变成无鉴权公开服务。
  * 该字段（以及提示文案"留空 = 不鉴权"与现状不符的问题）单独处理。
  */
-const CLEARABLE_CFG = new Set(['user_agent', 'prompt_file']);
+const CLEARABLE_CFG = new Set(['user_agent', 'prompt_file', 'client_identity_target']);
 
 function dig(obj, path) { return path.reduce((o, k) => (o == null ? undefined : o[k]), obj); }
 function put(obj, path, val) {
@@ -1206,6 +1209,9 @@ function collectConfig() {
       const raw = el.value.trim();
       // 覆盖型字段空串照发（见 CLEARABLE_CFG）；其余空 = 不下发。
       if (name.endsWith('_account_order')) v = raw.split(/[,，\s]+/).filter(Boolean);
+      // 身份词表：按逗号切分（**不按空格**——词本身可能带空格，如 "minimax code"、
+      // "cursor=Claude Code"）；空数组是有效取值（= 只用内置表），照发便于清空自定义词。
+      else if (name.endsWith('_words')) v = raw.split(/[,，]+/).map(s => s.trim()).filter(Boolean);
       else if (raw === '') v = CLEARABLE_CFG.has(name) ? '' : undefined;
       else if (name.endsWith('_hours')) v = raw.split(/[,，\s]+/).filter(Boolean).map(Number);
       else v = raw;

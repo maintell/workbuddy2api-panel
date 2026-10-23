@@ -859,3 +859,56 @@ func TestServerReadTimeout(t *testing.T) {
 		t.Error("unparsable read_timeout should fail fast")
 	}
 }
+
+// 身份词改写（features.rewrite_client_identity 家族）的默认值 / 显式关闭 / env 覆盖。
+// 缺省必须为开：这一层是"出站请求看起来像官方客户端"的默认姿态，只有显式 false 才关。
+func TestClientIdentityConfig(t *testing.T) {
+	c := Default()
+	if err := c.normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if !c.Features.RewriteClientIdentity {
+		t.Error("rewrite_client_identity 缺省应为 true")
+	}
+	if c.Features.ClientIdentityTarget != "WorkBuddy" {
+		t.Errorf("target=%q want WorkBuddy", c.Features.ClientIdentityTarget)
+	}
+	if len(c.Features.ClientIdentityWords) != 0 {
+		t.Errorf("words=%v want empty（只用内置表）", c.Features.ClientIdentityWords)
+	}
+
+	// 显式关闭 + 自定义词表/目标词：逐项保真。
+	configured, err := ParseConfig([]byte(`{"features":{
+		"rewrite_client_identity": false,
+		"client_identity_words": ["cursor", "!cline", "qoder=>WorkBuddy Pro"],
+		"client_identity_target": "WorkBuddy Pro"}}`))
+	if err != nil {
+		t.Fatalf("parse configured: %v", err)
+	}
+	if configured.Features.RewriteClientIdentity {
+		t.Error("显式 false 未生效")
+	}
+	if got := configured.Features.ClientIdentityWords; len(got) != 3 || got[0] != "cursor" || got[2] != "qoder=>WorkBuddy Pro" {
+		t.Errorf("words=%v", got)
+	}
+
+	// 目标词空白 = 未设置 → 回落内置 WorkBuddy（面板「留空 = 默认」）。
+	blank, err := ParseConfig([]byte(`{"features":{"client_identity_target":"  "}}`))
+	if err != nil {
+		t.Fatalf("parse blank target: %v", err)
+	}
+	if blank.Features.ClientIdentityTarget != "WorkBuddy" {
+		t.Errorf("blank target=%q want WorkBuddy", blank.Features.ClientIdentityTarget)
+	}
+
+	// env 覆盖（容器部署只给环境变量时也要能关）。
+	t.Setenv("WB2A_REWRITE_CLIENT_IDENTITY", "false")
+	t.Setenv("WB2A_CLIENT_IDENTITY_TARGET", "WorkBuddy CLI")
+	envCfg, err := Load("")
+	if err != nil {
+		t.Fatalf("load with env: %v", err)
+	}
+	if envCfg.Features.RewriteClientIdentity || envCfg.Features.ClientIdentityTarget != "WorkBuddy CLI" {
+		t.Errorf("env override 未生效: %+v", envCfg.Features)
+	}
+}

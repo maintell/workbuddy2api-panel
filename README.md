@@ -76,6 +76,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 🔍 **联网搜索** | `POST /v1/search/messages` 把上游 `/agenttool/v1/search` 包成 Anthropic Messages 兼容形态（DSH 等客户端的搜索 provider 零改动接入）；复用账号池选号 / 在途租约 / token 刷新 / 错误冷却，出站请求头对齐官方客户端 |
 | 💬 **系统提示词体系** | 网关自有提示词替换客户端 system（默认 `custom`），从源头消灭 system 来源的内容误报；`passthrough` 遇拦截自动降级重试 |
 | 🗑️ **指纹脱敏** | 出站请求体黑名单指纹字段清洗（可关闭），与提示词体系两层叠加 |
+| 🎭 **身份词改写** | 出站提示词里的第三方客户端名（`opencode` / `minimax code` / `cline` …）按规则改写为 `WorkBuddy`——上游看到的是官方客户端身份；词表与目标词可配，默认开 |
 | 📊 **可观测** | 每请求一行表格日志（TTFB / token 速率 / uid）；`/healthz` 带 `service` 身份标识可接负载均衡 / 宿主探活 |
 | 💾 **状态持久化** | 池状态本地原子落盘 + Upstash Redis 异步镜像（可选），重启择新恢复 |
 | 🖥️ **Web 管理面板** | 内嵌单页面板（明暗主题，七个视图）：账号运维 / 用量与积分分析 / 模型档位条件查询 / 在线改配置（热生效）/ 运行日志（含**调用来源 IP·UA** 与时间区间）/ 积分任务，见 [Web 管理面板](#-web-管理面板) |
@@ -220,7 +221,7 @@ flowchart LR
     U -->|"billing / auth / growth"| CB
 ```
 
-上游请求在出站前经历统一的改写管线（`internal/upstream/payload.go`）：强制 `stream:true`、`developer` 角色归一、tool_choice 归一、`image_url` 字符串兼容为 OpenAI 对象形态、DeepSeek 思维链注入、`reasoning_effort` 档位降级、`reasoning_content` 回填、指纹脱敏。
+上游请求在出站前经历统一的改写管线（`internal/upstream/payload.go`）：强制 `stream:true`、`developer` 角色归一、tool_choice 归一、`image_url` 字符串兼容为 OpenAI 对象形态、DeepSeek 思维链注入、`reasoning_effort` 档位降级、`reasoning_content` 回填、指纹脱敏、客户端身份词改写。
 
 ## 快速开始
 
@@ -400,6 +401,9 @@ curl -s http://localhost:7863/v1/search/messages \
 | `upstream.idle_timeout_seconds` | `300` | 聊天流中空闲上限（活跃续命，静默断流） |
 | `upstream.user_agent` | 空 | 出站 User-Agent 覆盖（空 = 现状 `CLI/2.63.2 CodeBuddy/2.63.2`）。官网「使用端」列按出站 UA 服务端归因；官方 WorkBuddy 桌面 UA 为 `WorkBuddy/<version>`，需要时可配 |
 | `features.sanitize_blacklist_fingerprints` | `true` | 出站请求体黑名单指纹脱敏 |
+| `features.rewrite_client_identity` | `true` | 出站请求体**客户端身份词改写**：提示词文本（content / reasoning）里的第三方客户端名改写为 `client_identity_target`，让上游看到的客户端身份与官方一致；独立于指纹脱敏，面板保存后热生效 |
+| `features.client_identity_words` | `[]` | 追加 / 移除身份词（大小写不敏感）：`"cursor"` 追加（目标 = 下面的目标词）；`"cursor=Claude Code"`（`=>` 同义）为该词单独指定目标；`"!cline"` 从内置表移除（内置词误伤时的自救口）。内置表见 [身份词改写](#身份词改写客户端名--workbuddy) |
+| `features.client_identity_target` | `WorkBuddy` | 身份词改写目标词；留空 = 内置 `WorkBuddy` |
 | `models.hidden` | `[]` | 模型黑名单：不对外暴露的模型。裸名=两域都藏；`"cn:xxx"`/`"global:xxx"`=只藏该域。`GET /v1/models` 列表过滤 + `POST /v1/chat/completions` 点名拒绝（400 `model_unavailable`）。面板保存后热生效 |
 | `prompt.mode` | `custom` | 系统提示词模式：`custom` = 网关用自有提示词替换客户端 system；`append` = 开头连续 system/developer 块后插网关提示词（既有消息逐字不动）；`passthrough` = 透传客户端原始 system（降级重试仍切中性提示词） |
 | `prompt.file` | 空 | 提示词文件路径；空 = 内置默认（约 2KB）；路径非空但不可读 → 启动报错 |
@@ -439,16 +443,17 @@ curl -s http://localhost:7863/v1/search/messages \
 
 加载顺序：JSON 文件 → `WB2A_*` 环境变量（变量非空才覆盖）：
 
-`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_DNS`(逗号分隔多个) · `WB2A_MAX_BODY_MB` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE`
+`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_DNS`(逗号分隔多个) · `WB2A_MAX_BODY_MB` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_REWRITE_CLIENT_IDENTITY`(bool) · `WB2A_CLIENT_IDENTITY_TARGET` · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE`
 
 ## 核心行为语义
 
 ### 系统提示词体系
 
-客户端（Claude Code / Codex 等 CLI）会在 system prompt 注入固定模板句，上游内容审核按**逐字精确匹配**误杀合法流量（HTTP 400 + 审核文案）。网关提供两层防护，互不替代：
+客户端（Claude Code / Codex 等 CLI）会在 system prompt 注入固定模板句，上游内容审核按**逐字精确匹配**误杀合法流量（HTTP 400 + 审核文案）；它还会看提示词里的**客户端身份词**（`You are opencode …`），据此把非官方客户端的请求判成通道校验失败（11-128）。网关提供三层防护，互不替代：
 
 1. **提示词体系**（解决 **system / developer 来源**的误报）：由 `prompt.mode` 控制
 2. **指纹脱敏**（兜底 **用户 / assistant 消息**里的指纹串）：由 `features.sanitize_blacklist_fingerprints` 控制
+3. **身份词改写**（把 `opencode` / `minimax code` 这类客户端名换成 `WorkBuddy`）：由 `features.rewrite_client_identity` 控制
 
 | 模式 | 语义 |
 |---|---|
@@ -457,6 +462,17 @@ curl -s http://localhost:7863/v1/search/messages \
 | `passthrough` | 透传客户端原始 system，不做改写 |
 
 内置默认提示词约 2KB（`internal/prompt/defaultprompt.md`，嵌入二进制）。`prompt.file` 指向自定义提示词文件（自定义人格 / 人设）即整体替换内置默认；**留空 = 内置默认**，路径非空但不可读 → **启动报错**（fail fast，不会静默回落到内置默认）。
+
+### 身份词改写（客户端名 → WorkBuddy）
+
+第三方 coding agent（OpenCode / MiniMax Code / Cline …）会在 system prompt 里声明身份（`You are opencode, an AI coding agent.`），并随历史消息一路带进出站请求。上游据此判定「非官方客户端」，表现为 11-128 通道校验失败或内容策略拦截——与用户真实意图无关。`features.rewrite_client_identity`（默认开）在出站前把这些**产品名**按规则改写为目标词（`features.client_identity_target`，默认 `WorkBuddy`）：
+
+- **覆盖**：`messages[].content`（字符串 / 多模态 `text` part）与 `reasoning_content` / `reasoning`，即提示词文本
+- **不覆盖**：`tool_calls[].function.arguments`——那是模型产出的工具入参（要写入磁盘的文件内容、命令参数），改写等于篡改用户数据，且失败是静默的
+- **边界**：ASCII 大小写不敏感、长词优先；`opencode.json` / `@opencode/plugin` / `opencode_plugin` / `minimax-code` 这类**路径与包名保持原样**（右侧点号只在紧跟字母数字时才视为粘连，句末句号照常命中）；`WorkBuddy (WorkBuddy)` 这类重复会折叠成一次
+- **内置词表**：`opencode` · `minimax code` · `mcode` · `qwen code` · `gemini cli` · `copilot cli` · `roo code` · `kilo code` · `cline` · `aider` · `windsurf` · `kiro` · `iflow` · `qoder` · `trae` · `lingma` · `comate` · `codegeex` · `marscode` · `通义灵码` · `文心快码`
+- **刻意不收**：厂商名（`minimax` / `anthropic` / `openai`，用户对话里的正常讨论对象）；英文常用词（`cursor` / `continue` / `amp` / `goose` / `droid` / `crush` / `zed`，会被 `set the cursor` 之类误伤）；`Claude Code` / `Codex`（逐字指纹已由指纹脱敏层「只改一词」处理，整词替换反而抹掉上游认得的句子）
+- **自定义**：`features.client_identity_words` 支持 `cursor`（追加）/ `cursor=Claude Code`（单独指定目标，`=>` 同义）/ `!cline`（从内置表移除），改配置即可，面板保存后热生效
 
 ### 内容拦截误报与降级重试
 
@@ -728,7 +744,7 @@ http://127.0.0.1:7863/panel/
 | **积分构成** | **积分到期分布**（按批次到期日聚合，颜色区分账号）+ **账号对比**（按来源归并的面额 / 余额 / 包数卡片与混合构成条）+ 逐包明细（按到期日排序，默认展开最近到期的 `panel.package_detail_limit` 个，其余与已用完的包折叠） |
 | **任务中心** | 成长任务队列：一键扫描全部账号待办 → 按账号排队执行（账号内串行，账号间可选并发 1-3），进度实时更新；另含开学季券码查询。详见 [任务中心](#-任务中心面板新视图) |
 | **模型与档位** | 实时查询上游：每模型的积分倍率（含限时免费 / 夜间折扣等**生效价**与划线牌价）、默认思考档、支持的档位（含「off（可关）」）、上下文长度与最大输出；存在探测数据时最大输出列显示**实测上限与钳制告警**（见「探测模型真实输出上限」）。支持**按条件查询**：关键词（ID / 名称 / 描述 / 厂商 / 标签，空格分词 AND）、域（CN / Global）、能力（工具 / 视觉 / 思考 / 默认）、思考档位、价格（折扣 / 限时免费 / 打折），以及按倍率 / 上下文 / 最大输出 / ID 排序 |
-| **配置** | 在线编辑 config.json：服务（监听地址 / API 密钥 / 单账号明细条数）、定时任务（签到 / 保活 / 旅行 / 活跃 / 成长任务五类时点与开关 + 余额刷新间隔）、账号池与流量治理、上游与高级（超时 / 出站 UA / 提示词模式 / 指纹脱敏 / 粘性路由）、日志（调用来源记录开关） |
+| **配置** | 在线编辑 config.json：服务（监听地址 / API 密钥 / 单账号明细条数）、定时任务（签到 / 保活 / 旅行 / 活跃 / 成长任务五类时点与开关 + 余额刷新间隔）、账号池与流量治理、上游与高级（超时 / 出站 UA / 提示词模式 / 指纹脱敏 / 身份词改写 / 粘性路由）、日志（调用来源记录开关） |
 | **运行日志** | **请求记录表**（时间 / 结果 / 模型 / 账号 / **来源 IP** / **User-Agent** / 耗时 / Token / 积分 / 请求 ID），支持按 IP·UA·模型·账号·请求 ID 与结果筛选、读取条数、时间范围；下方 **运行日志** 按「任务 / 对话 / 系统」分频道，可开关自动滚动；新增 **积分历史**（每次真实查到余额与上次比对，变动即留痕） |
 
 顶部另有「刷新」（向上游全量查询真实余额并回写；5 秒自动轮询只读内存，不打上游）与「添加账号」（浏览器内完成 OAuth 设备授权：显示授权链接 + 自动轮询，登录后凭证落盘并**热加载进池，免重启**，也支持导入 cockpit tools 导出的 JSON）。
@@ -999,7 +1015,7 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 
 ### 系统提示词被内容策略误杀怎么办？
 
-默认 `prompt.mode=custom` 已用网关自有提示词替换客户端 system，从源头消除大部分误报；用户 / assistant 消息中的指纹串由 `features.sanitize_blacklist_fingerprints` 清洗，两层叠加。`passthrough` 模式下首遇拦截会自动换 Degraded 中性提示词同请求重试一次。
+默认 `prompt.mode=custom` 已用网关自有提示词替换客户端 system，从源头消除大部分误报；用户 / assistant 消息中的指纹串由 `features.sanitize_blacklist_fingerprints` 清洗；提示词里的第三方客户端名（`opencode` / `minimax code` …）由 `features.rewrite_client_identity` 改写为 `WorkBuddy`——三层叠加。`passthrough` 模式下首遇拦截会自动换 Degraded 中性提示词同请求重试一次。
 
 ### 如何让官网「使用端」列显示为 WorkBuddy？
 
