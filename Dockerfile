@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.23-alpine AS build
+# 构建阶段钉在构建机架构（$BUILDPLATFORM）：多架构构建时靠 GOOS/GOARCH 交叉编译，
+# 而不是让 arm64 容器在 QEMU 里跑整个 Go 编译器（后者慢数倍，还更容易超时）。
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod ./
 # 防止因为直接使用官方源导致下载失败
@@ -8,10 +12,12 @@ RUN go env -w GOPROXY=https://goproxy.cn,direct && \
     go mod download
 COPY . .
 # 一次编译全部二进制（工具进镜像，容器内可直接跑脚本）。全部 -trimpath -s -w。
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wb2api ./cmd/server \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/signin_bin ./cmd/signin \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/login ./cmd/login \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/credit ./cmd/credit
+# TARGETOS/TARGETARCH 为空时（非 buildx 的本地构建）go 自动回落到宿主平台。
+RUN export CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+ && go build -trimpath -ldflags="-s -w" -o /out/wb2api ./cmd/server \
+ && go build -trimpath -ldflags="-s -w" -o /out/signin_bin ./cmd/signin \
+ && go build -trimpath -ldflags="-s -w" -o /out/login ./cmd/login \
+ && go build -trimpath -ldflags="-s -w" -o /out/credit ./cmd/credit
 
 FROM alpine:3.20
 # python3：login.sh 的 JSON 解析 / 签到 / 落盘；bash：shell 脚本体。
