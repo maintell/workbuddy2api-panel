@@ -4,10 +4,13 @@ name: release
 #
 # 为什么合并：原来两个 workflow 各自监听 `push main` 与 `push tag v*`，于是「推
 # main 再打 tag」这种一次发版会并发跑 4 条 run（main×2 + tag×2）、把同一份代码
-# 编译三遍以上，而且镜像与二进制未必出自同一 commit。合并后只有一条链路：
-#   - push main / PR → 只跑 test，不构建、不推送
-#   - push tag v*    → test → 五平台二进制 → GitHub Release → ghcr 多架构镜像，
-#                      全部在同一条 run 里完成（镜像与二进制同 commit）
+# 编译三遍以上，而且镜像与二进制未必出自同一 commit。
+#
+# **只有发版 tag 会真正跑流水线**（main 上的普通提交不再触发任何 run，代码正确性
+# 由 tag 上的 test job 兜底）：
+#   - push tag v*  → 一条 run：test → 五平台二进制 → GitHub Release → ghcr 镜像
+#   - pull_request → 只跑 test（不构建、不推送），保护 go.mod / 代码改动
+#   - 其余（含 push main）→ 不触发
 #
 # 手动重跑（Actions 抽风 / 只想补镜像）必须指定 tag ref：
 #   gh workflow run release.yml --ref v1.2.3
@@ -17,7 +20,8 @@ name: release
 
 on:
   push:
-    branches: [main]
+    # 不在分支上触发：main 只作为代码集成分支，产物一律由 tag 产出，
+    # 避免「一次发版多条 run、多个分支各跑一遍」。
     tags: ["v*"]
   pull_request:
     paths:
@@ -33,7 +37,7 @@ on:
       - ".github/workflows/release.yml"
   workflow_dispatch:
 
-# PR 取消过时的运行；main 与 tag 各自串行，互不阻塞。
+# PR 取消过时的运行；tag 串行（同 tag 重跑不会叠加）。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
