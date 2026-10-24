@@ -9,6 +9,9 @@ let view = 'accounts';
 let overviewData = null, cfgLoaded = null;
 let logPin = true, loginState = null, loginTimer = null;
 let refTimer = null;
+/* 用量页的自动刷新定时器与在途标记。声明放顶部：go() 会引用它们，
+   放在使用点之后会让「顶层 go() 早于声明执行」踩 TDZ（同 mdFilter 的教训）。 */
+let usAutoTimer = null, usAutoBusy = false;
 /* 「模型与档位」默认排序：积分倍率 低 → 高。
    放最便宜/免费的模型在最上面——按倍率选型是这张表最常见的用途，上游返回顺序
    （default）没有业务含义，只作为可选项保留。
@@ -362,6 +365,8 @@ const EXP_FRESH_MS = 2 * 60 * 1000;            // 缓存新鲜窗口：2 分钟�
 
 const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', config: '配置', logs: '运行日志' };
 function go(v) {
+  // 自动刷新只服务于当前可见视图：切走就停，回到「用量」再由下面重新起。
+  if (v !== 'usage') usAutoStop();
   view = v;
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.view === v));
@@ -369,7 +374,7 @@ function go(v) {
   if (v === 'models' && !$('mdBody').children.length) loadModels();
   if (v === 'config') loadConfig();
   if (v === 'logs') loadLogs();
-  if (v === 'usage') loadUsage();
+  if (v === 'usage') { loadUsage(); usAutoSync(); }
   if (v === 'packages') loadPackages();
   // 到期提醒卡片：默认可见，进页面即用 overview 快照渲染（零上游请求，随首页统计
   // 每轮刷新）。不再「打开账号池就打上游」——逐账号实时查在账号多时会卡死面板。
@@ -2675,7 +2680,53 @@ async function loadUsage() {
   }
 }
 
-if ($('btnUsage')) $('btnUsage').onclick = loadUsage;
+/* 用量页自动刷新 ─────────────────────────────────────────────────────
+   用量页不在全局 5s 轮询（refreshVisible）的覆盖范围内，原来只能手点「刷新」。
+   这里给它独立定时器：5/10/15/30/60 秒可选、可停止，默认 5 秒。
+
+   三条纪律（缺一条就会变成「页面在后台一直打接口」或「越刷越卡」）：
+   - 只在「用量」可见且页面在前台时走：切走视图 / 切到后台立即停，回到前台先补
+     一次刷新再续上——隐藏标签页不该继续轮询；
+   - 在途不叠加：上一拍还没回来就跳过这一拍，慢响应时不会排队堆积请求；
+   - 失败静默：自动刷新失败不弹 toast（每 5 秒一条会把页面淹掉），错误已由
+     loadUsage 的 catch 渲染进图/表空态。 */
+const US_AUTO_DEFAULT = '5';
+
+// usAutoSecs 把下拉框取值翻成秒；非数字/非正数一律按「停止」(0) 处理。
+function usAutoSecs(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+function usAutoStop() {
+  if (usAutoTimer) { clearInterval(usAutoTimer); usAutoTimer = null; }
+}
+// usAutoSync 按当前选择与页面状态重建定时器（幂等：重复调用等于重新计时）。
+function usAutoSync() {
+  usAutoStop();
+  const el = $('usAuto');
+  const secs = usAutoSecs(el ? el.value : US_AUTO_DEFAULT);
+  if (!secs || view !== 'usage' || document.hidden) return;
+  usAutoTimer = setInterval(usAutoTick, secs * 1000);
+}
+async function usAutoTick() {
+  if (view !== 'usage' || document.hidden) { usAutoStop(); return; }
+  if (usAutoBusy) return;                    // 上一拍还没回来
+  usAutoBusy = true;
+  try { await loadUsage(); } finally { usAutoBusy = false; }
+}
+
+if ($('btnUsage')) {
+  // 手动刷新也重置节拍：刚点过就不必隔一秒再自动打一次。
+  $('btnUsage').onclick = () => { loadUsage(); usAutoSync(); };
+}
+if ($('usAuto')) {
+  $('usAuto').value = US_AUTO_DEFAULT;
+  $('usAuto').onchange = usAutoSync;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { usAutoStop(); return; }
+  if (view === 'usage') { usAutoSync(); usAutoTick(); }   // 回前台补一次
+});
 // 时间范围控件绑定：任何改动（预设切换 / 自定义起止）都重新拉一次用量。
 if ($('usRange')) trangeBind('usRange', loadUsage);
 

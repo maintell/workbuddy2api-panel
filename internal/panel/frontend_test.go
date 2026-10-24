@@ -694,6 +694,97 @@ process.stdout.write(JSON.stringify({
 	}
 }
 
+// 用量页自动刷新：下拉选项、默认值、以及与 go()/可见性的接线必须一致。
+//
+// 为什么要钉：默认 5 秒是明确的产品口径；而「切走视图 / 切到后台要停」这条纪律
+// 一旦被改掉，页面会在后台持续打 /panel/api/usage——多开几个标签页就是成倍的
+// 空转请求，且没人会从截图上看出来。
+func TestUsageAutoRefreshWiring(t *testing.T) {
+	htmlBytes, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlBytes)
+	at := strings.Index(html, `<select id="usAuto"`)
+	if at < 0 {
+		t.Fatal("index.html: 找不到 #usAuto（用量页自动刷新下拉框）")
+	}
+	sel := html[at:]
+	sel = sel[:strings.Index(sel, "</select>")]
+	var got []string
+	for _, m := range regexp.MustCompile(`<option value="([^"]*)"`).FindAllStringSubmatch(sel, -1) {
+		got = append(got, m[1])
+	}
+	if want := "5,10,15,30,60,0"; strings.Join(got, ",") != want {
+		t.Fatalf("index.html: #usAuto 选项 = %v，want %s（0 = 停止）", got, want)
+	}
+	seld := regexp.MustCompile(`<option value="([^"]*)" selected>`).FindAllStringSubmatch(sel, -1)
+	if len(seld) != 1 || seld[0][1] != "5" {
+		t.Fatalf("index.html: 默认自动刷新必须是唯一的 5 秒，实际 %v", seld)
+	}
+
+	jsBytes, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		"const US_AUTO_DEFAULT = '5';",
+		"if (v !== 'usage') usAutoStop();",
+		"if (v === 'usage') { loadUsage(); usAutoSync(); }",
+		"$('usAuto').onchange = usAutoSync;",
+		"document.addEventListener('visibilitychange'",
+		"if (usAutoBusy) return;",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js 缺少 %q（自动刷新接线被改动）", want)
+		}
+	}
+}
+
+// usAutoSecs：下拉取值 → 秒。非数字/非正数必须按「停止」(0) 处理，
+// 否则一个空值会变成 setInterval(..., NaN) 静默失效或变成 0ms 高频狂刷。
+func TestAppJSUSAutoSecs(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; usAutoSecs test skipped")
+	}
+	script := `const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const start = src.indexOf('function usAutoSecs');
+const end = src.indexOf('function usAutoStop');
+if (start < 0 || end < 0 || end < start) throw new Error('usAutoSecs not found');
+const ctx = { Number };
+vm.createContext(ctx);
+vm.runInContext(src.slice(start, end) + '\nthis.usAutoSecs=usAutoSecs;', ctx);
+process.stdout.write(JSON.stringify({
+  five: ctx.usAutoSecs('5'),
+  sixty: ctx.usAutoSecs('60'),
+  numeric: ctx.usAutoSecs(15),
+  stop: ctx.usAutoSecs('0'),
+  empty: ctx.usAutoSecs(''),
+  junk: ctx.usAutoSecs('abc'),
+  negative: ctx.usAutoSecs('-5'),
+}));`
+	f, err := os.CreateTemp(t.TempDir(), "usauto-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
+	if err != nil {
+		t.Fatalf("usAutoSecs node test failed: %v\n%s", err, out)
+	}
+	const want = `{"five":5,"sixty":60,"numeric":15,"stop":0,"empty":0,"junk":0,"negative":0}`
+	if strings.TrimSpace(string(out)) != want {
+		t.Fatalf("usAutoSecs=%s\nwant %s", out, want)
+	}
+}
+
 // 配置表单与 CFG_MAP 必须一一对应，且面板声称"可在线改"的热生效键必须真的
 // 出现在表单里。
 //

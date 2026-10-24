@@ -869,6 +869,16 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
           <span class="grow"></span>
           <span class="note" id="usNote">—</span>
           <span class="trange" id="usRange"></span>
+          <!-- 自动刷新：默认 5 秒（与账号池轮询同频）。选「停止」即完全回到手动。
+               选项值与 app.js 的 US_AUTO_DEFAULT 必须一致。 -->
+          <select id="usAuto" aria-label="用量自动刷新间隔">
+            <option value="5" selected>自动刷新 · 5 秒</option>
+            <option value="10">自动刷新 · 10 秒</option>
+            <option value="15">自动刷新 · 15 秒</option>
+            <option value="30">自动刷新 · 30 秒</option>
+            <option value="60">自动刷新 · 60 秒</option>
+            <option value="0">停止自动刷新</option>
+          </select>
           <button class="xs" id="btnUsage">刷新</button>
         </header>
         <div class="kpis" id="usStats"></div>
