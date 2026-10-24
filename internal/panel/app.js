@@ -9,8 +9,14 @@ let view = 'accounts';
 let overviewData = null, cfgLoaded = null;
 let logPin = true, loginState = null, loginTimer = null;
 let refTimer = null;
+/* 「模型与档位」默认排序：积分倍率 低 → 高。
+   放最便宜/免费的模型在最上面——按倍率选型是这张表最常见的用途，上游返回顺序
+   （default）没有业务含义，只作为可选项保留。
+   注意 index.html 的 #mdSort 也要给同一个 option 加 selected，否则首屏控件显示的
+   是「上游默认顺序」而列表已按倍率排好，看起来像排序失效。 */
+const MD_SORT_DEFAULT = 'rate';
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
-let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
+let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: MD_SORT_DEFAULT };
 let mdAll = [], mdProbes = {}, mdProbeOf = () => undefined;
 let mdLocks = [], mdRecent = [];
 let reqFilter = { q: '', outcome: '' };
@@ -119,7 +125,11 @@ const TRANGE_PRESETS = [
   ['0', '全部历史'],
   ['custom', '自定义…'],
 ];
-const TRANGE_DEFAULT = '72';
+// TRANGE_DEFAULT 是**未显式指定**预设的控件默认口径。
+// 用量页绑定时不传预设 → 默认「今天」；请求记录页在 trangeBind 里显式传 '0'
+// （全部历史），不受这里影响。后端对「什么都不给」仍回落 72 小时（保持旧调用方
+// 与脚本化调用行为），所以默认收窄只由前端控件表达。
+const TRANGE_DEFAULT = 'today';
 const trangeStates = new Map(); // hostId → { preset, from: Date|null, to: Date|null }
 
 // dtLocalValue / dtLocalParse 与 <input type=datetime-local> 的取值格式互转
@@ -828,9 +838,9 @@ function renderModels() {
 }
 
 function resetModelFilter() {
-  mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
+  mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: MD_SORT_DEFAULT };
   $('mdQ').value = ''; $('mdRealm').value = ''; $('mdCap').value = '';
-  $('mdEffort').value = ''; $('mdPromo').value = ''; $('mdSort').value = 'default';
+  $('mdEffort').value = ''; $('mdPromo').value = ''; $('mdSort').value = MD_SORT_DEFAULT;
   renderModels();
 }
 

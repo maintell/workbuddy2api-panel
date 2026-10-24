@@ -451,6 +451,43 @@ process.stdout.write(JSON.stringify({
 	}
 }
 
+// 「模型与档位」默认排序 = 积分倍率 低 → 高：控件、状态、重置三处必须一致。
+//
+// 为什么需要：默认排序散落三处——app.js 的 MD_SORT_DEFAULT、index.html 里
+// <option selected>、resetModelFilter 的重置值。只改其中一处就会出现「列表已按
+// 倍率排好、下拉框却显示上游默认顺序」的错位，看着像排序失效；Go 侧完全看不出来。
+func TestModelSortDefaultIsRate(t *testing.T) {
+	jsBytes, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsBytes)
+	if !strings.Contains(js, "const MD_SORT_DEFAULT = 'rate';") {
+		t.Fatalf("app.js: 默认排序常量应为 'rate'")
+	}
+	if !strings.Contains(js, "promo: '', sort: MD_SORT_DEFAULT }") {
+		t.Fatalf("app.js: mdFilter 初始排序必须引用 MD_SORT_DEFAULT（不要写死字面量）")
+	}
+	if !strings.Contains(js, "$('mdSort').value = MD_SORT_DEFAULT") {
+		t.Fatalf("app.js: resetModelFilter 的排序（状态与控件）必须回到 MD_SORT_DEFAULT")
+	}
+
+	htmlBytes, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlBytes)
+	at := strings.Index(html, `<select id="mdSort"`)
+	if at < 0 {
+		t.Fatal("index.html: 找不到 #mdSort")
+	}
+	sel := html[at:]
+	sel = sel[:strings.Index(sel, "</select>")]
+	if got := regexp.MustCompile(`<option value="([^"]*)" selected>`).FindAllStringSubmatch(sel, -1); len(got) != 1 || got[0][1] != "rate" {
+		t.Fatalf("index.html: #mdSort 默认选中项应唯一且为 rate，实际 %v\n%s", got, sel)
+	}
+}
+
 // Global 模型可用性标签：模型锁优先于最近请求；无本地证据时保持“待验证”，
 // 不能把上游目录里出现模型误判为当前账号有权限。
 func TestAppJSModelAvailability(t *testing.T) {
@@ -600,7 +637,14 @@ const approx = (qs, wantSec) => {
 };
 const now = Date.now();
 const todayQ = q('today', true);
+// 默认口径：不指定预设的控件（用量页）首次打开应等价于「今天」——不是历史遗留的
+// 72 小时（近 3 天）。请求记录页在绑定时显式传 '0'，不受此默认影响。
+const defState = ctx.trangeState('fresh');
+const defQ = ctx.trangeQuery('fresh', true).toString();
 process.stdout.write(JSON.stringify({
+  defaultPreset: defState.preset,
+  defaultIsMidnight: defQ === 'from=' + secOf(ctx.trangeMidnight()),
+  defaultLabel: ctx.trangeLabel('fresh'),
   todayIsMidnight: todayQ === 'from=' + secOf(ctx.trangeMidnight()),
   todayNoTo: !/to=/.test(todayQ),
   rolling24: q('24', true),
@@ -635,7 +679,8 @@ process.stdout.write(JSON.stringify({
 	local := func(h, m int) string {
 		return strconv.FormatInt(time.Date(2026, 9, 30, h, m, 0, 0, time.Local).Unix(), 10)
 	}
-	want := `{"todayIsMidnight":true,"todayNoTo":true,` +
+	want := `{"defaultPreset":"today","defaultIsMidnight":true,"defaultLabel":"今天",` +
+		`"todayIsMidnight":true,"todayNoTo":true,` +
 		// rolling0 必须是 "hours=0"（显式全部历史）。此前期望值是空串——那恰好把
 		// issue #121 的错误行为固化成了断言：空 query 会被后端的 72 小时缺省接管，
 		// 于是「全部历史」显示成「近 3 天」。
