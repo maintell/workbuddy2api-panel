@@ -193,7 +193,10 @@ const end = src.indexOf('function rateLimitRowsHtml');
 if (start < 0 || end < 0) throw new Error('rate limit helpers not found');
 const ctx = { Date, Number, String, Math };
 vm.createContext(ctx);
-vm.runInContext(src.slice(start, end) + '\nthis.rateLimitMeta=rateLimitMeta;', ctx);
+// 必须带 'use strict'：浏览器里 app.js 整份是严格模式，而按切片求值时丢掉这个
+// 前缀，未声明变量会被隐式创建成全局变量、不报错。曾经 rateLimitMeta 里漏声明
+// detail，测试全绿但线上渲染整段抛 ReferenceError（账号池三块同时空白）。
+vm.runInContext("'use strict';\n" + src.slice(start, end) + '\nthis.rateLimitMeta=rateLimitMeta;', ctx);
 const now = new Date(2026, 8, 28, 14, 0, 0).getTime();
 const reset = new Date(2026, 8, 28, 16, 0, 0).getTime();
 const until = new Date(2026, 8, 28, 15, 0, 0).getTime();
@@ -221,6 +224,150 @@ process.stdout.write(JSON.stringify({
 	const want = `{"rate":"网关 2026-09-28 15:00 起重试（剩余 1时00分） · 上游称 2026-09-28 16:00 恢复","unavailable":"预计 1时00分 后重试","unknown":"预计解封时间未知"}`
 	if strings.TrimSpace(string(out)) != want {
 		t.Fatalf("rate-limit formatting=%s want %s", out, want)
+	}
+}
+
+// 整份 app.js 必须在浏览器同款严格模式下跑通三块首屏渲染：账号池（含限流行）、
+// 模型锁池、积分到期提醒快照。
+//
+// 为什么用整文件而不是按函数切片：切片会丢掉文件首行的 'use strict'，把「赋值给
+// 未声明变量」这类线上必崩（ReferenceError，进而让 loadOverview 整段中断、三块
+// 同时空白）的错误在测试里变成静默通过。整文件求值等于在 Node 里复刻浏览器行为。
+func TestAppJSOverviewRenderStrict(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; overview render test skipped")
+	}
+	script := `const fs = require('fs');
+const vm = require('vm');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+
+const els = new Map();
+function el(id) {
+  if (els.has(id)) return els.get(id);
+  const o = {
+    id: id, innerHTML: '', textContent: '', className: '', hidden: false, title: '', value: '',
+    children: { length: 0 }, childElementCount: 0, dataset: {}, style: {},
+    classList: { add: function(){}, remove: function(){}, toggle: function(){}, contains: function(){ return false; } },
+    appendChild: function(){}, append: function(){}, removeChild: function(){}, remove: function(){},
+    addEventListener: function(){}, removeEventListener: function(){},
+    focus: function(){}, blur: function(){}, click: function(){},
+    closest: function(){ return null; }, matches: function(){ return false; },
+    querySelectorAll: function(){ return []; }, querySelector: function(){ return null; },
+    setAttribute: function(){}, removeAttribute: function(){}, getAttribute: function(){ return null; },
+    getBoundingClientRect: function(){ return { top: 0, left: 0, width: 0, height: 0, bottom: 0, right: 0 }; }
+  };
+  els.set(id, o);
+  return o;
+}
+const noop = function(){};
+const ctx = {
+  console: { log: noop, warn: noop, error: noop },
+  document: {
+    getElementById: el,
+    createElement: function(t){ return el('created:' + t); },
+    createDocumentFragment: function(){ return el('frag'); },
+    querySelectorAll: function(){ return []; },
+    querySelector: function(){ return null; },
+    addEventListener: noop, removeEventListener: noop,
+    documentElement: { dataset: {}, style: {}, classList: { add: noop, remove: noop } },
+    body: el('body'), head: el('head'), hidden: false, visibilityState: 'visible'
+  },
+  localStorage: { getItem: function(){ return null; }, setItem: noop, removeItem: noop },
+  sessionStorage: { getItem: function(){ return null; }, setItem: noop, removeItem: noop },
+  location: { hash: '#accounts', href: 'https://example/panel/', pathname: '/panel/', search: '' },
+  navigator: { userAgent: 'node', language: 'zh-CN', clipboard: { writeText: function(){ return Promise.resolve(); } } },
+  matchMedia: function(){ return { matches: false, addEventListener: noop, removeEventListener: noop, addListener: noop }; },
+  addEventListener: noop, removeEventListener: noop,
+  setTimeout: function(){ return 0; }, clearTimeout: noop,
+  setInterval: function(){ return 0; }, clearInterval: noop,
+  requestAnimationFrame: function(){ return 0; }, cancelAnimationFrame: noop,
+  fetch: function(){ return new Promise(function(){}); },
+  alert: noop, confirm: function(){ return true; }, prompt: function(){ return ''; },
+  URL: { createObjectURL: function(){ return 'blob:'; }, revokeObjectURL: noop },
+  IntersectionObserver: function(){ return { observe: noop, disconnect: noop, unobserve: noop }; },
+  ResizeObserver: function(){ return { observe: noop, disconnect: noop, unobserve: noop }; },
+  MutationObserver: function(){ return { observe: noop, disconnect: noop }; },
+  getComputedStyle: function(){ return { getPropertyValue: function(){ return ''; } }; },
+  Date: Date, Math: Math, JSON: JSON, Number: Number, String: String, Object: Object,
+  Array: Array, Map: Map, Set: Set, Promise: Promise, RegExp: RegExp, Error: Error,
+  isNaN: isNaN, parseInt: parseInt, parseFloat: parseFloat,
+  encodeURIComponent: encodeURIComponent, decodeURIComponent: decodeURIComponent,
+  URLSearchParams: URLSearchParams, Intl: Intl
+};
+ctx.window = ctx;
+ctx.globalThis = ctx;
+ctx.self = ctx;
+vm.createContext(ctx);
+vm.runInContext(src + '\n;globalThis.__R = { renderAccounts: renderAccounts, renderModelLocks: renderModelLocks, renderExpirySnapshot: renderExpirySnapshot };', ctx);
+const R = ctx.__R;
+
+const p2 = function(n){ return String(n).padStart(2, '0'); };
+const isoAt = function(offsetDays){ return new Date(Date.now() + offsetDays * 86400000).toISOString(); };
+const dayAt = function(offsetDays){
+  const d = new Date(Date.now() + offsetDays * 86400000);
+  return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
+};
+const later = isoAt(5), sooner = isoAt(1);
+
+const accs = [
+  { uid: 'uid-0000-0000-0000-000000000001', nickname: '甲', credits: 3186, credits_total: 5154,
+    success_count: 12, err_total: 1, in_flight: 0, paused: false, disabled: false,
+    credits_earliest_expiry: isoAt(2), credits_earliest_remaining: 542,
+    credits_expiry_buckets: [
+      { date: dayAt(2), expires_at: isoAt(2), remain: 542 },
+      { date: dayAt(4), expires_at: isoAt(4), remain: 100 }
+    ],
+    token_usage: { request_count: 3, total_tokens: 1200, last_latency_ms: 800, last_tokens_per_second: 12.5 },
+    rate_limited_models: [
+      { model: 'deepseek-v4.1-flash', kind: 'rate_limit', reset_at: later, until: sooner },
+      { model: 'glm-5.3', kind: 'rate_limit' },
+      { model: 'missing-model', kind: 'model_unavailable', until: later }
+    ] },
+  { uid: 'uid-0000-0000-0000-000000000002', credits: 0, credits_total: -1, enterprise: true,
+    disabled: true, degrade_until: later, nickname: '', rate_limited_models: [] }
+];
+const locks = [
+  { model: 'deepseek-v4.1-flash', realm: 'cn', total: 17, servable: 16, locked: 1, state: 'partial', unlock_at: sooner, fully_unlock_at: later, reason: '6004 model rate limit' },
+  { model: 'glm-5.3', realm: 'global', total: 2, servable: 0, locked: 2, state: 'locked', unlock_at: sooner, fully_unlock_at: later, reason: 'quota' }
+];
+
+const out = { errors: [] };
+function run(name, fn) {
+  try { fn(); } catch (e) { out.errors.push(name + ': ' + (e && e.message)); }
+}
+run('accounts', function(){ R.renderAccounts(accs); });
+run('locks', function(){ R.renderModelLocks(locks); });
+run('expiry', function(){ R.renderExpirySnapshot({ accounts: accs, balance_refresh_sec: 300, balance_refreshed_at: isoAt(0) }); });
+
+const accHtml = el('accBody').innerHTML;
+const mlHtml = el('mlBody').innerHTML;
+const expHtml = el('expList').innerHTML;
+out.accRows = (accHtml.match(/<tr/g) || []).length;
+out.mlRows = (mlHtml.match(/<tr/g) || []).length;
+out.expRows = (expHtml.match(/exp-row/g) || []).length;
+out.hasRateLimitBlock = accHtml.indexOf('rate-limits') >= 0;
+out.hasDualClock = accHtml.indexOf('上游称') >= 0;
+out.hasUnlimited = accHtml.indexOf('不限') >= 0;
+out.hasLockStates = mlHtml.indexOf('部分限流') >= 0 && mlHtml.indexOf('整池不可用') >= 0;
+out.expHasRecentDate = expHtml.indexOf('最近到期') >= 0;
+out.expNoteHasSnapshot = el('expNote').textContent.indexOf('快照') >= 0;
+process.stdout.write(JSON.stringify(out));`
+	f, err := os.CreateTemp(t.TempDir(), "overview-render-*.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(script); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	out, err := exec.Command(node, f.Name(), "app.js").CombinedOutput()
+	if err != nil {
+		t.Fatalf("overview render node test failed: %v\n%s", err, out)
+	}
+	const want = `{"errors":[],"accRows":2,"mlRows":2,"expRows":2,"hasRateLimitBlock":true,"hasDualClock":true,"hasUnlimited":true,"hasLockStates":true,"expHasRecentDate":true,"expNoteHasSnapshot":true}`
+	if strings.TrimSpace(string(out)) != want {
+		t.Fatalf("overview render=%s\nwant %s", out, want)
 	}
 }
 

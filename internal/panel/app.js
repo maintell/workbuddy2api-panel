@@ -277,6 +277,10 @@ function rateLimitMeta(row, now) {
     };
   }
   const title = [model, resetAt ? '上游重置：' + fmtLocalDateTime(resetAt) : '上游重置：时间未知'];
+  // detail 必须先声明：app.js 整份以 'use strict' 运行，直接给未声明变量赋值会抛
+  // ReferenceError，而它一旦抛错就会中断 loadOverview，账号池 / 模型锁池 / 到期
+  // 提醒三块同时空白（只在一个账号有限流时才触发，极难复现）。
+  let detail;
   if (until && resetAt && until < resetAt) {
     // 双时钟（issue #171 问题二）：黄框出现/消失由 until 决定（网关为防超长
     // 限流拖死全池，把重试封顶在 now+softRateMax），主文字却按 resetAt 显示，
@@ -516,6 +520,23 @@ function renderModelLocks(rows) {
   }
 }
 
+// guardedRender 单区块渲染隔离：某个区块的渲染异常不再中断 /overview 里其余的
+// 区块。事故背景：账号池的 rateLimitMeta 漏声明 detail，严格模式下赋值未声明变量
+// 抛 ReferenceError，于是只要有一个账号被模型限流，账号池表、模型锁池、积分到期
+// 提醒三块同时空白，而首页 KPI 早就写完了、看起来一切正常——从界面完全看不出是
+// 哪一块坏了。现在坏掉的那块自己显示错误原因，其余区块照常渲染。
+// fallback 里的 {msg} 会被替换成异常信息（已转义，可安全拼进 HTML）。
+function guardedRender(label, box, fallback, fn) {
+  try {
+    fn();
+  } catch (e) {
+    const msg = (e && e.message) || String(e);
+    const el = box ? $(box) : null;
+    if (el) el.innerHTML = fallback.replace('{msg}', esc(msg));
+    if (typeof console !== 'undefined' && console.error) console.error('[panel] ' + label + ' 渲染失败：', e);
+  }
+}
+
 async function loadOverview(quiet) {
   try {
     const d = await api('overview');
@@ -539,13 +560,21 @@ async function loadOverview(quiet) {
     $('accNote').textContent = d.in_flight_full ? d.in_flight_full + ' 个账号在途占满' : '';
     const up = Math.floor(d.uptime_sec);
     $('subMeta').textContent = '运行 ' + (up >= 86400 ? Math.floor(up / 86400) + ' 天 ' : '') + Math.floor(up % 86400 / 3600) + ' 时 ' + Math.floor(up % 3600 / 60) + ' 分';
-    renderAccounts(d.accounts || []);
-    renderModelLocks(d.model_locks);
+    guardedRender('账号池', 'accBody',
+      '<tr><td colspan="9"><div class="empty">账号池渲染失败：{msg}</div></td></tr>',
+      () => renderAccounts(d.accounts || []));
+    guardedRender('模型锁池', 'mlBody',
+      '<tr><td colspan="8"><div class="empty">模型锁池渲染失败：{msg}</div></td></tr>',
+      () => renderModelLocks(d.model_locks));
     // 到期卡片跟随首页统计同步刷新（用同一份响应里的按日批次，不额外发请求）。
     // 2 分钟内的实时明细最新且更全，保留；过期后由 state 快照接管，避免点过一次
     // 「检查」之后卡片永远停在那一刻的旧数据。
     const liveFresh = lastPackages && (Date.now() - lastPackagesAt) < EXP_FRESH_MS;
-    if ($('expBox') && !liveFresh) renderExpirySnapshot(d);
+    if ($('expBox') && !liveFresh) {
+      guardedRender('积分到期提醒', 'expList',
+        '<div class="empty">积分到期提醒渲染失败：{msg}</div>',
+        () => renderExpirySnapshot(d));
+    }
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
