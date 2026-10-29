@@ -302,7 +302,7 @@ func TestChatStreamSendsHeadersAndStreamTrue(t *testing.T) {
 		gotSession = r.Header.Get("X-Session-ID")
 		gotOrigin = r.Header.Get("Origin")
 		gotReferer = r.Header.Get("Referer")
-		gotBody, _ = io.ReadAll(r.Body)
+		gotBody = readWireBody(t, r)
 		return &http.Response{
 			StatusCode: 200,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -348,7 +348,7 @@ func TestFetchModelsEffortsDriveBodyDowngrade(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/v3/config"):
 			return jsonResp(200, `{"code":0,"data":{"models":[]}}`), nil
 		default:
-			outbound, _ = io.ReadAll(r.Body)
+			outbound = readWireBody(t, r)
 			return &http.Response{
 				StatusCode: 200,
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},

@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -432,7 +431,7 @@ func TestChatStreamWireBodyClientIdentityRewritten(t *testing.T) {
 	setIdentityForTest(t, true, nil, "")
 	var gotBody []byte
 	ts := newTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
+		gotBody = readWireBody(t, r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
 	})

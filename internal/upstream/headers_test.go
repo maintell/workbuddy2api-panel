@@ -21,8 +21,9 @@ func TestChatHeadersAlwaysSendConversationTrio(t *testing.T) {
 	c.ChatHeaders(req, testAuth(), "", ChatMeta{})
 
 	hex32 := regexp.MustCompile(`^[0-9a-f]{32}$`)
+	// uuidRe 带连字符的 UUID 形态（兜底 X-Conversation-ID 用，实测桌面端就是这种形状）。
+	uuidRe := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	for _, h := range []string{
-		"X-Conversation-ID",
 		"X-Conversation-Request-ID",
 		"X-Conversation-Message-ID",
 	} {
@@ -33,6 +34,10 @@ func TestChatHeadersAlwaysSendConversationTrio(t *testing.T) {
 		if !hex32.MatchString(v) {
 			t.Errorf("%s = %q, want 32 hex", h, v)
 		}
+	}
+	// X-Conversation-ID 的兜底形态是 UUID（实测桌面端恒为带连字符的会话 UUID）。
+	if v := req.Header.Get("X-Conversation-ID"); !uuidRe.MatchString(v) {
+		t.Errorf("X-Conversation-ID = %q, want UUID", v)
 	}
 
 	// 兜底会话 ID 每次请求新生成（不是常量），且与 request/message ID 不冲突。

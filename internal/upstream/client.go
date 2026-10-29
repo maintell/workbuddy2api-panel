@@ -745,7 +745,7 @@ type Client struct {
 	// 空 = 内置默认（对齐官方 5.5.4 分发包）。
 	ClientVersion string
 
-	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认（官方内置 CLI 2.137.1）。
+	// CliVersion 出站 UA 中 `CLI/<ver>` 段版本。空 = 内置默认（5.9.3 自带 CLI 2.165.0）。
 	CliVersion string
 
 	// ClientName 用量归属头取值（X-Product / X-IDE-Name / X-IDE-Type / X-IDE-Version）。
@@ -1216,16 +1216,23 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	if c.globalOn(a) {
 		prepared = ensureConsoleSystem(prepared)
 	}
+	// 出站 body 压缩：官方桌面端/CLI 对所有 /v2/chat/completions 恒发 gzip 体
+	// （Content-Encoding: gzip，2026-10-29 实抓）。压缩失败退回明文，不阻断请求。
+	wire, gz := gzipBody(prepared)
 	// reqCtx 的 cancel 在每个出口显式调用（Do 失败 / ≥400 / 成功分支移交 monitorBody），
 	// 循环本身各分支必 return——无循环尾兜底代码（此前外层 var cancel 从未赋值 +
 	// 尾部不可达 cancel() 是潜伏 nil-panic，已删；chatPaths 恒非空由构造保证）。
 	for _, path := range c.chatPaths(a) {
 		endpoint := c.chatBase(a) + path
-		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(prepared))
+		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(wire))
 		if err != nil {
 			return nil, 0, nil, err
 		}
 		c.ChatHeaders(req, a, clientIP, meta)
+		if gz {
+			// Content-Length 由 http.NewRequest 按压缩体长度自动写（此处已是压缩体）。
+			req.Header.Set("Content-Encoding", "gzip")
+		}
 		// 从调用方 ctx 派生：保留取消传播（父 ctx 取消 → 本 ctx 取消），
 		// 同时 monitorBody.Close 仍能独立 cancel 本分支（空闲掐流）。
 		reqCtx, cancel := context.WithCancel(ctx)

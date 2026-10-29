@@ -49,6 +49,13 @@ func PrepareBodyOptWithEffortsAndDefault(src []byte, sanitize bool, efforts map[
 	if _, has := obj["stream_options"]; !has {
 		obj["stream_options"] = map[string]any{"include_usage": true}
 	}
+	// extra_vars：实测 5.9.3 桌面端每次 chat 都带，形如
+	// {"growthEvent":"[{\"eventCode\":\"chat_request_send\",…}]","initiator":"user"}。
+	// 缺省时只补身份段 initiator；growthEvent 是逐请求埋点（含 inputLength/模式等），
+	// 照抄固定值反而失真，故不伪造。显式带则原样透传。
+	if _, has := obj["extra_vars"]; !has {
+		obj["extra_vars"] = map[string]any{"initiator": "user"}
+	}
 	normalizeToolChoice(obj)
 	normalizeToolPatterns(obj)
 	normalizeRoles(obj)

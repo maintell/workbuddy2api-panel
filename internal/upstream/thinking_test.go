@@ -271,8 +271,9 @@ func TestInjectThinkingSkipNonDeepSeek(t *testing.T) {
 				}
 			}
 			// 非 deepseek 不得新增 thinking 相关字段；允许的既有新增字段：
-			// stream（强制流式）+ stream_options（D7 include_usage，CLI 流式必发）。
-			allowedNew := map[string]bool{"stream": true, "stream_options": true}
+			// stream（强制流式）+ stream_options（D7 include_usage，CLI 流式必发）
+			// + extra_vars（官方客户端必发的身份段，见 payload.go）。
+			allowedNew := map[string]bool{"stream": true, "stream_options": true, "extra_vars": true}
 			if len(got) > len(in)+len(allowedNew) {
 				for k := range got {
 					if _, had := in[k]; !had && !allowedNew[k] {

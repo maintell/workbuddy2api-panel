@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1482,7 +1483,7 @@ func TestContentBlockedTriggersDegradedRetry(t *testing.T) {
 	var bodies [][]byte
 	up := &upstream.Client{
 		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			raw, _ := io.ReadAll(r.Body)
+			raw := readUpstreamBody(t, r)
 			bodies = append(bodies, raw)
 			// 首次（body 含原始 system）返回 400 内容拦截；后续返回 200。
 			if len(bodies) == 1 {
@@ -1623,7 +1624,7 @@ func TestCustomModeFingerprintSanitizePreserved(t *testing.T) {
 	var sentBody []byte
 	up := &upstream.Client{
 		HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-			raw, _ := io.ReadAll(r.Body)
+			raw := readUpstreamBody(t, r)
 			sentBody = raw
 			return &http.Response{
 				StatusCode: 200,
@@ -2053,4 +2054,27 @@ func TestModelsHiddenFiltered(t *testing.T) {
 	if ids["cn:deepseek-v3"] {
 		t.Errorf("hidden model leaked into /v1/models: ids=%v", ids)
 	}
+}
+
+// readUpstreamBody 读上游收到的 chat body：出站 body 恒 gzip
+// （见 upstream.gzipBody），断言前必须先解压。
+func readUpstreamBody(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read upstream body: %v", err)
+	}
+	if !strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		return raw
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gunzip upstream body: %v", err)
+	}
+	return out
 }

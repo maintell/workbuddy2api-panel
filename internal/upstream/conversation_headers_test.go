@@ -60,8 +60,8 @@ func TestChatStreamConversationChannelHeaders(t *testing.T) {
 						if id != tc.meta.ConversationID {
 							t.Fatalf("explicit conversation ID changed: %q", id)
 						}
-					} else if len(id) != 32 || !validTraceID(id) || id == previousID {
-						t.Fatalf("fallback ID must be fresh 32 hex: %q (previous %q)", id, previousID)
+					} else if !uuidShape(id) || id == previousID {
+						t.Fatalf("fallback ID must be a fresh UUID: %q (previous %q)", id, previousID)
 					}
 					if tc.meta.ConversationRequestID != "" && h.Get("X-Conversation-Request-ID") != tc.meta.ConversationRequestID {
 						t.Fatal("explicit request ID changed")
@@ -74,4 +74,23 @@ func TestChatStreamConversationChannelHeaders(t *testing.T) {
 			})
 		}
 	}
+}
+
+// uuidShape 判断是否为 8-4-4-4-12 的 UUID 形态（X-Conversation-ID 兜底值，见 headers.go）。
+func uuidShape(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, ch := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if ch != '-' {
+				return false
+			}
+			continue
+		}
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

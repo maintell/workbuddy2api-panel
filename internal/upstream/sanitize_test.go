@@ -1,6 +1,8 @@
 package upstream
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -251,11 +253,34 @@ func TestPrepareBodyDefaultSanitizes(t *testing.T) {
 	}
 }
 
+// readWireBody 取上游实际收到的 chat body：出站 body 恒 gzip（见 gzip.go），
+// 测试侧必须先按 Content-Encoding 解压再断言，否则看到的是压缩字节。
+func readWireBody(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read wire body: %v", err)
+	}
+	if !strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		return raw
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	defer zr.Close()
+	out, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("gunzip wire body: %v", err)
+	}
+	return out
+}
+
 // 出站边界集成：ChatStream 发往上游的 wire body 必须无残留指纹。
 func TestChatStreamWireBodySanitized(t *testing.T) {
 	var gotBody []byte
 	ts := newTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
+		gotBody = readWireBody(t, r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
 	})
@@ -298,7 +323,7 @@ func TestChatStreamWireBodySanitized(t *testing.T) {
 func TestChatStreamWireBodyCodexInstructionsSanitized(t *testing.T) {
 	var gotBody []byte
 	ts := newTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
+		gotBody = readWireBody(t, r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
 	})
@@ -342,7 +367,7 @@ func TestChatStreamWireBodyCodexInstructionsSanitized(t *testing.T) {
 func TestChatStreamWireBodySanitizeDisabled(t *testing.T) {
 	var gotBody []byte
 	ts := newTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		gotBody, _ = io.ReadAll(r.Body)
+		gotBody = readWireBody(t, r)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	})

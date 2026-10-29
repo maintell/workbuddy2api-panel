@@ -15,19 +15,19 @@ import (
 const (
 	// defaultClientVersionCN / defaultClientVersionGlobal 出站 WorkBuddy 客户端版本段
 	// （UA 的 `WorkBuddy/<ver>` 与 X-IDE-Version），按 realm 取本机实测的最新桌面端：
-	// CN = WorkBuddy Desktop 5.8.3，国际版 = WorkBuddy AI 5.8.4（app.asar package.json，
-	// 取证 2026-10-21/22）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
-	defaultClientVersionCN     = "5.8.3"
+	// CN = WorkBuddy Desktop 5.9.3（安装版 37.10.3-43，2026-10-27 构建，app.asar
+	// package.json + cli/product.json genieVersion 双向取证）；国际版仍 5.8.4（本机无
+	// 5.9.x 国际安装样本）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
+	defaultClientVersionCN     = "5.9.3"
 	defaultClientVersionGlobal = "5.8.4"
 	// defaultSlugCN / defaultSlugGlobal UA 第二段的品牌段（实抓：CN 桌面端 5.8.3 为
 	// `WorkBuddy`（product.json 无 urlProtocol，回落 productName 原样）；国际版 5.8.4
 	// 为 `workbuddy-ai`（urlProtocol 原样））。
 	defaultSlugCN     = "WorkBuddy"
 	defaultSlugGlobal = "workbuddy-ai"
-	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。两个桌面端自带 CLI 均为 2.161.0
-	// （resources/app.asar.unpacked/cli `--version`）。
-	// config upstream.cli_version 可覆盖（空 = 内置默认）。
-	defaultCliVersion = "2.161.0"
+	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。5.9.3 自带 CLI = 2.165.0
+	// （cli/package.json 实读）。config upstream.cli_version 可覆盖（空 = 内置默认）。
+	defaultCliVersion = "2.165.0"
 
 	originRefererCN     = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
@@ -275,13 +275,20 @@ func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 	// 不再因为「透传优先」而漏发该头（issue #190）。
 	conversationID := meta.ConversationID
 	if conversationID == "" {
-		conversationID = session.NewMessageID()
+		// 实测桌面端这里恒是带连字符的会话 UUID，故本级兜底也渲染成 UUID 形状
+		// （此前是裸 32 hex，字节形态与官方不一致）。
+		conversationID = asUUID(session.NewMessageID())
 	}
 	req.Header.Set("X-Conversation-ID", conversationID)
 	req.Header.Set("X-Conversation-Request-ID", convReqID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)
 	req.Header.Set("X-Request-ID", messageID)
 	req.Header.Set("X-Root-Request-ID", convReqID)
+	// baggage：实测桌面端主对话必带，形如
+	// `buddyId=,buddyName=,codebuddy.session_id=<会话ID>,codebuddy.conversation_request_id=<轮次ID>`
+	// （buddyId/buddyName 为空串，仅在使用 Buddy 应用时有值）。
+	req.Header.Set("baggage", "buddyId=,buddyName=,codebuddy.session_id="+conversationID+
+		",codebuddy.conversation_request_id="+convReqID)
 	// acp-connection-id 实测与 conversation-request-id **不同值**，按会话稳定派生。
 	req.Header.Set("acp-connection-id", asUUID(deriveHex("acp", convReqID)))
 	traceID := meta.TraceID
@@ -356,6 +363,9 @@ func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	req.Header.Set("X-Agent-Intent", "craft")
 	req.Header.Set("X-Agent-Purpose", "conversation")
 	req.Header.Set("X-Agent-Type", "main")
+	// X-Agent-Runtime：5.9.3 桌面端主对话实测为 `local-agent`（独立 CLI 直接连上游时
+	// 是 `other`，见 search.go；这里对齐桌面托管形态）。属于 2.165.0 起新增的头族成员。
+	req.Header.Set("X-Agent-Runtime", "local-agent")
 	req.Header.Set("X-Private-Data", "true")
 	// OpenAI SDK（stainless）指纹：实测桌面端 chat 同样携带，取实抓常量。
 	req.Header.Set("X-Stainless-Arch", "x64")
