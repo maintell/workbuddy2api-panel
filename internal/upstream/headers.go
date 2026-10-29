@@ -100,17 +100,23 @@ func (c *Client) userAgent(a *auth.Auth) string {
 	return c.defaultWorkBuddyUAFor(a)
 }
 
-// billingUA 白名单类（billing/checkin/banner）出站 UA：单段 `WorkBuddy/<clientVersion>`
-// （官方 banner 显式覆写形态，不带 CLI 段）。默认生效（伪造官方桌面端指纹）；
-// 显式 client_name="SaaS" 才不设 UA（还原旧行为，Go 默认 UA）。
+// defaultBillingUA billing 域出站 UA。2026-10-29 桌面端 TLS 中间人实抓：
+// `POST /billing/meter/get-user-resource-summary` 携带的是主进程内置 axios 的默认 UA
+// `axios/1.16.1`（两侧安装的 main/axios.js 版本串均为 1.16.1），而不是 WorkBuddy 指纹——
+// 该域没走 RestOperations 的 buildUserAgent 拦截器。上游按此 UA 正常返回 200。
+const defaultBillingUA = "axios/1.16.1"
+
+// billingUA 白名单类（billing/checkin）出站 UA：默认对齐官方主进程 axios 指纹；
+// 显式 client_name="SaaS" 才不设 UA（还原旧行为，Go 默认 UA）；
+// config user_agent 非空时优先（见 BillingHeaders）。
 func (c *Client) billingUA() string { return c.billingUAFor(nil) }
 
-// billingUAFor 按 realm 取版本的 billing UA。
+// billingUAFor 生效的 billing UA（realm 无关：两侧都是同一个 axios 版本串）。
 func (c *Client) billingUAFor(a *auth.Auth) string {
 	if c == nil || c.attributionClientName() == "SaaS" {
 		return ""
 	}
-	return "WorkBuddy/" + c.clientVersionFor(a)
+	return defaultBillingUA
 }
 
 // resolveDeviceToken 解析本次请求的 X-Device-Token 取值。

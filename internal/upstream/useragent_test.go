@@ -48,7 +48,7 @@ func TestUserAgentDefaultEmptyKeepsClientUA(t *testing.T) {
 			call: func(c *Client) error {
 				return c.ReportChatActivity(&auth.Auth{AccessToken: "at", UID: "u1"}, "cid", "")
 			},
-			wantUA: "WorkBuddy/5.9.3",
+			wantUA: "axios/1.16.1",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,8 +163,7 @@ const (
 	defaultUAString      = "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0"
 	explicitString       = "MyCustomAgent/3.1"
 	clientVerUAString    = "WorkBuddy/6.0.0 WorkBuddy/6.0.0 CLI/2.165.0"
-	billingUAWorkBuddy   = "WorkBuddy/5.9.3"
-	billingUACustomVer   = "WorkBuddy/6.0.0"
+	billingUAWorkBuddy   = "axios/1.16.1"
 	billingUAAgentString = "BillingAgent/1"
 )
 
@@ -268,11 +267,11 @@ func TestBillingUA_WhenClientNameSet(t *testing.T) {
 	if _, _, err := c.UserResource(a); err != nil {
 		t.Errorf("userResource: %v", err)
 	}
-	// 自定义 client_version → WorkBuddy/6.0.0
+	// 自定义 client_version 不影响 billing UA：实测该域恒为主进程 axios 指纹
 	c2 := &Client{
 		HTTP: &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
-			if got := r.Header.Get("User-Agent"); got != billingUACustomVer {
-				t.Errorf("billing UA = %q want %q", got, billingUACustomVer)
+			if got := r.Header.Get("User-Agent"); got != billingUAWorkBuddy {
+				t.Errorf("billing UA = %q want %q", got, billingUAWorkBuddy)
 			}
 			return jsonResp(200, `{"code":0,"data":{"response":{"data":{"accounts":[{"PackageName":"x","CycleCapacitySize":100,"CycleCapacityUsed":0}]}}}}`), nil
 		})},
@@ -320,11 +319,11 @@ func TestBillingUA_WhenClientNameEmpty(t *testing.T) {
 	if _, _, err := c.UserResource(a); err != nil {
 		t.Errorf("userResource: %v", err)
 	}
-	if ua != "WorkBuddy/6.0.0" {
-		t.Errorf("billing UA = %q want WorkBuddy/6.0.0 (default desktop fingerprint)", ua)
+	if ua != defaultBillingUA {
+		t.Errorf("billing UA = %q want %q (主进程 axios 指纹)", ua, defaultBillingUA)
 	}
-	if got := c.billingUA(); got != "WorkBuddy/6.0.0" {
-		t.Errorf("billingUA() = %q want WorkBuddy/6.0.0", got)
+	if got := c.billingUA(); got != defaultBillingUA {
+		t.Errorf("billingUA() = %q want %q", got, defaultBillingUA)
 	}
 	// 显式 SaaS 还原旧行为（不设 UA）。
 	c.ClientName = "SaaS"
