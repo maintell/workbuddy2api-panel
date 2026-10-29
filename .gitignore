@@ -49,3 +49,7 @@ server.exe
 # 本地抓包与解包临时产物（含真实提示词/客户端二进制）
 scripts/_captures/
 tmp_wb*/
+
+tmp_*/
+scripts/_mitm*.mjs
+scripts/_tmp*

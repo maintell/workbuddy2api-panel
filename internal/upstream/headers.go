@@ -14,15 +14,16 @@ import (
 
 const (
 	// defaultClientVersionCN / defaultClientVersionGlobal 出站 WorkBuddy 客户端版本段
-	// （UA 的 `WorkBuddy/<ver>` 与 X-IDE-Version），按 realm 取本机实测的最新桌面端：
-	// CN = WorkBuddy Desktop 5.9.3（安装版 37.10.3-43，2026-10-27 构建，app.asar
-	// package.json + cli/product.json genieVersion 双向取证）；国际版仍 5.8.4（本机无
-	// 5.9.x 国际安装样本）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
+	// （UA 的 `WorkBuddy/<ver>` 与 X-IDE-Version），两侧均为 5.9.3（安装版 37.10.3-43，
+	// 2026-10-27 构建）：CN = WorkBuddy Desktop，国际版 = WorkBuddy AI。取自 app.asar
+	// package.json + cli/product.json genieVersion，并经 2026-10-29 TLS 中间人实抓确认
+	// （UA 两段版本都是 5.9.3）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
 	defaultClientVersionCN     = "5.9.3"
-	defaultClientVersionGlobal = "5.8.4"
-	// defaultSlugCN / defaultSlugGlobal UA 第二段的品牌段（实抓：CN 桌面端 5.8.3 为
-	// `WorkBuddy`（product.json 无 urlProtocol，回落 productName 原样）；国际版 5.8.4
-	// 为 `workbuddy-ai`（urlProtocol 原样））。
+	defaultClientVersionGlobal = "5.9.3"
+	// defaultSlugCN / defaultSlugGlobal UA 第二段的品牌段（2026-10-29 实抓：
+	// CN 桌面端为 `WorkBuddy`（product.json 无 urlProtocol，回落 productName 原样）；
+	// 国际版为 `workbuddy-ai`（urlProtocol 原样），整条 UA 形如
+	// `WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0`）。
 	defaultSlugCN     = "WorkBuddy"
 	defaultSlugGlobal = "workbuddy-ai"
 	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。5.9.3 自带 CLI = 2.165.0
@@ -45,7 +46,7 @@ func originRefererFor(a *auth.Auth) string {
 // clientVersion 生效的 WorkBuddy 客户端版本（无 realm 上下文时按 CN 默认）。
 func (c *Client) clientVersion() string { return c.clientVersionFor(nil) }
 
-// clientVersionFor 按 realm 取生效版本：显式 config > global 5.8.4 > CN 5.8.3。
+// clientVersionFor 按 realm 取生效版本：显式 config > 按 realm 默认（两侧均 5.9.3）。
 func (c *Client) clientVersionFor(a *auth.Auth) string {
 	if c != nil && c.ClientVersion != "" {
 		return c.ClientVersion
@@ -64,11 +65,11 @@ func (c *Client) cliVersion() string {
 	return defaultCliVersion
 }
 
-// defaultWorkBuddyUAFor 组装默认客户端出站 UA（官方桌面端 RestOperations 层形状）：
-// `WorkBuddy/<ver> WorkBuddy/<ver> [CLI/<cli>]`。
-// 平台段恒为 `WorkBuddy`：国际版 WorkBuddy AI 5.8.4 的 buildVlmGatewayHeaders
-// 同样硬编码 `WorkBuddy/<ver>` 两段（其 app.asar 内 "WorkBuddy AI" 字符串 0 命中），
-// 国际差异只体现在版本号（5.8.4）与 endpoint（www.workbuddy.ai）。
+// defaultWorkBuddyUAFor 组装默认客户端出站 UA（官方 RestOperations 层 buildUserAgent 形状）：
+// `WorkBuddy/<ver> <slug>/<ver> [CLI/<cli>]`，slug 按 realm（CN `WorkBuddy` /
+// 国际 `workbuddy-ai`）。2026-10-29 桌面端实抓两侧逐字核对：
+// ・CN      `WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0`
+// ・国际版  `WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0`
 // 显式 config cli_version 为空时不追加 CLI 段（官方仅在 platformVersion 存在时追加）。
 func (c *Client) defaultWorkBuddyUAFor(a *auth.Auth) string {
 	v := c.clientVersionFor(a)
