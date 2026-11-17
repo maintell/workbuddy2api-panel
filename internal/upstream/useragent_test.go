@@ -160,9 +160,9 @@ func TestFetchModelsUsesConfiguredUA(t *testing.T) {
 // --- A 段：UA 对齐官方 WorkBuddy 三段式 ---
 
 const (
-	defaultUAString      = "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0"
+	defaultUAString      = "WorkBuddy/5.11.3 WorkBuddy/5.11.3 CLI/2.176.0"
 	explicitString       = "MyCustomAgent/3.1"
-	clientVerUAString    = "WorkBuddy/6.0.0 WorkBuddy/6.0.0 CLI/2.165.0"
+	clientVerUAString    = "WorkBuddy/6.0.0 WorkBuddy/6.0.0 CLI/2.176.0"
 	billingUAWorkBuddy   = "axios/1.16.1"
 	billingUAAgentString = "BillingAgent/1"
 )

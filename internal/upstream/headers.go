@@ -14,21 +14,24 @@ import (
 
 const (
 	// defaultClientVersionCN / defaultClientVersionGlobal 出站 WorkBuddy 客户端版本段
-	// （UA 的 `WorkBuddy/<ver>` 与 X-IDE-Version），两侧均为 5.9.3（安装版 37.10.3-43，
-	// 2026-10-27 构建）：CN = WorkBuddy Desktop，国际版 = WorkBuddy AI。取自 app.asar
-	// package.json + cli/product.json genieVersion，并经 2026-10-29 TLS 中间人实抓确认
-	// （UA 两段版本都是 5.9.3）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
-	defaultClientVersionCN     = "5.9.3"
-	defaultClientVersionGlobal = "5.9.3"
-	// defaultSlugCN / defaultSlugGlobal UA 第二段的品牌段（2026-10-29 实抓：
-	// CN 桌面端为 `WorkBuddy`（product.json 无 urlProtocol，回落 productName 原样）；
-	// 国际版为 `workbuddy-ai`（urlProtocol 原样），整条 UA 形如
-	// `WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0`）。
+	// （UA 的 `WorkBuddy/<ver>`、X-IDE-Version 与 X-Client-Version）。2026-11-17 复核：
+	// CN = 5.11.3（2026-11-12 构建）、国际版 = 5.11.4（2026-11-16 构建），**两侧版本号
+	// 已分叉**。取自 app.asar package.json + install-manifest，并经 TLS 中间人实抓确认
+	// （国际版 UA 两段均为 5.11.4）。config upstream.client_version 可覆盖（空 = 按 realm 默认）。
+	defaultClientVersionCN     = "5.11.3"
+	defaultClientVersionGlobal = "5.11.4"
+	// defaultSlugCN / defaultSlugGlobal UA 第二段与 X-Client-Product 的品牌段
+	// （2026-11-17 实抓：CN 为 `WorkBuddy`（product.json 无 urlProtocol，回落
+	// applicationName）；国际版为 `workbuddy-ai`（applicationName 即 urlProtocol），
+	// 整条 UA 形如 `WorkBuddy/5.11.4 workbuddy-ai/5.11.4 CLI/2.176.0`）。
 	defaultSlugCN     = "WorkBuddy"
 	defaultSlugGlobal = "workbuddy-ai"
-	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。5.9.3 自带 CLI = 2.165.0
+	// defaultClientPlatform X-Client-Platform 取值：官方桌面端 Windows 版实测 `windows`
+	// （client-identity.js 按 process.platform 映射 windows/macos/linux）。
+	defaultClientPlatform = "windows"
+	// defaultCliVersion 出站 UA 中 `CLI/<ver>` 段版本。5.11.x 自带 CLI = 2.176.0
 	// （cli/package.json 实读）。config upstream.cli_version 可覆盖（空 = 内置默认）。
-	defaultCliVersion = "2.165.0"
+	defaultCliVersion = "2.176.0"
 
 	originRefererCN     = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
@@ -65,19 +68,24 @@ func (c *Client) cliVersion() string {
 	return defaultCliVersion
 }
 
+// slugFor 返回按 realm 的品牌段：CN `WorkBuddy` / 国际 `workbuddy-ai`。
+// UA 第二段与 X-Client-Product 同源（后者取产品配置 applicationName，两者实测一致）。
+func (c *Client) slugFor(a *auth.Auth) string {
+	if a != nil && a.IsGlobal() {
+		return defaultSlugGlobal
+	}
+	return defaultSlugCN
+}
+
 // defaultWorkBuddyUAFor 组装默认客户端出站 UA（官方 RestOperations 层 buildUserAgent 形状）：
 // `WorkBuddy/<ver> <slug>/<ver> [CLI/<cli>]`，slug 按 realm（CN `WorkBuddy` /
-// 国际 `workbuddy-ai`）。2026-10-29 桌面端实抓两侧逐字核对：
-// ・CN      `WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0`
-// ・国际版  `WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0`
+// 国际 `workbuddy-ai`）。2026-11-17 桌面端实抓两侧逐字核对：
+// ・CN      `WorkBuddy/5.11.3 WorkBuddy/5.11.3 CLI/2.176.0`
+// ・国际版  `WorkBuddy/5.11.4 workbuddy-ai/5.11.4 CLI/2.176.0`
 // 显式 config cli_version 为空时不追加 CLI 段（官方仅在 platformVersion 存在时追加）。
 func (c *Client) defaultWorkBuddyUAFor(a *auth.Auth) string {
 	v := c.clientVersionFor(a)
-	slug := defaultSlugCN
-	if a != nil && a.IsGlobal() {
-		slug = defaultSlugGlobal
-	}
-	ua := "WorkBuddy/" + v + " " + slug + "/" + v
+	ua := "WorkBuddy/" + v + " " + c.slugFor(a) + "/" + v
 	if cli := c.cliVersion(); cli != "" {
 		ua += " CLI/" + cli
 	}
@@ -354,12 +362,13 @@ func (c *Client) attributionClientName() string {
 	return "WorkBuddy"
 }
 
-// injectAttribution 注入归属 / 智能体头，对齐桌面端 5.8.3 applyGatewayHeaders：
-// X-Agent-Intent=craft、X-Agent-Purpose=conversation、X-Private-Data=true、
-// X-IDE-Type/Name=WorkBuddy、X-IDE-Version=<client_version>、
+// injectAttribution 注入归属 / 智能体头，对齐桌面端 5.11.x applyGatewayHeaders +
+// client-identity 头族：X-Agent-Intent=craft、X-Agent-Purpose=conversation、
+// X-Agent-Runtime=local-agent、X-Private-Data=true、X-IDE-Type/Name=WorkBuddy、
+// X-IDE-Version=<client_version>、X-Client-Version/Platform/Product、
 // X-Product=SaaS（deploymentType，**不是**品牌名）。
 // 仅在 chat/completions 路径生效（ChatHeaders 调用）。
-// 显式 ClientName="SaaS" 还原旧行为（仅 X-Product="SaaS"，不设 X-IDE-* / agent 头）；
+// 显式 ClientName="SaaS" 还原旧行为（仅 X-Product="SaaS"，不设 X-IDE-* / agent / X-Client-* 头）；
 // 配其他值则 IDE 两段跟随该值。
 func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	name := c.attributionClientName()
@@ -385,6 +394,12 @@ func (c *Client) injectAttribution(req *http.Request, a *auth.Auth) {
 	req.Header.Set("X-IDE-Name", name)
 	req.Header.Set("X-IDE-Type", name)
 	req.Header.Set("X-IDE-Version", c.clientVersionFor(a))
+	// X-Client-* 头族：5.11.x 新增（main/client-identity.js，注入第一方域名请求）。
+	// Version = 客户端版本；Platform = 桌面平台（实测 windows）；Product = 产品配置
+	// applicationName（CN `WorkBuddy` / 国际 `workbuddy-ai`，与 UA 第二段同源）。
+	req.Header.Set("X-Client-Version", c.clientVersionFor(a))
+	req.Header.Set("X-Client-Platform", defaultClientPlatform)
+	req.Header.Set("X-Client-Product", c.slugFor(a))
 	req.Header.Set("X-Product", "SaaS")
 }
 

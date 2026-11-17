@@ -15,6 +15,46 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 )
 
+// TestChatHeadersCarryClientIdentity 5.11.x 新增的 X-Client-* 头族（main/client-identity.js），
+// 实测桌面端第一方域名请求必带：Version=客户端版本、Platform=windows、Product=产品
+// applicationName（CN WorkBuddy / 国际 workbuddy-ai，与 UA 第二段同源）。
+func TestChatHeadersCarryClientIdentity(t *testing.T) {
+	c := New()
+
+	cn := testAuth()
+	req, _ := http.NewRequest(http.MethodPost, "https://example.com/v2/chat/completions", nil)
+	c.ChatHeaders(req, cn, "", ChatMeta{})
+	if got := req.Header.Get("X-Client-Version"); got != defaultClientVersionCN {
+		t.Errorf("CN X-Client-Version = %q, want %q", got, defaultClientVersionCN)
+	}
+	if got := req.Header.Get("X-Client-Product"); got != defaultSlugCN {
+		t.Errorf("CN X-Client-Product = %q, want %q", got, defaultSlugCN)
+	}
+	if got := req.Header.Get("X-Client-Platform"); got != "windows" {
+		t.Errorf("CN X-Client-Platform = %q, want windows", got)
+	}
+
+	// 国际版：版本与品牌段都不同（版本号两侧已分叉）。realm 由 domain 回落判定。
+	global := &auth.Auth{AccessToken: "tok", Domain: "www.workbuddy.ai", UID: "u2"}
+	greQ, _ := http.NewRequest(http.MethodPost, "https://example.com/v2/chat/completions", nil)
+	c.ChatHeaders(greQ, global, "", ChatMeta{})
+	if got := greQ.Header.Get("X-Client-Version"); got != defaultClientVersionGlobal {
+		t.Errorf("global X-Client-Version = %q, want %q", got, defaultClientVersionGlobal)
+	}
+	if got := greQ.Header.Get("X-Client-Product"); got != defaultSlugGlobal {
+		t.Errorf("global X-Client-Product = %q, want %q", got, defaultSlugGlobal)
+	}
+
+	// 显式 client_name="SaaS" 还原旧行为：不注入 X-Client-*。
+	s := New()
+	s.ClientName = "SaaS"
+	saasReq, _ := http.NewRequest(http.MethodPost, "https://example.com/v2/chat/completions", nil)
+	s.ChatHeaders(saasReq, cn, "", ChatMeta{})
+	if got := saasReq.Header.Get("X-Client-Version"); got != "" {
+		t.Errorf("SaaS mode should not set X-Client-Version, got %q", got)
+	}
+}
+
 // TestChatHeadersCarryAgentRuntimeAndBaggage 实测桌面端主对话必带这两个头。
 func TestChatHeadersCarryAgentRuntimeAndBaggage(t *testing.T) {
 	c := New()

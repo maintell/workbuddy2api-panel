@@ -141,7 +141,7 @@ func TestNonChatModelGenerationTags(t *testing.T) {
 }
 
 // TestDesktopUAForGlobalAccount 桌面端 UA：平台段恒 `WorkBuddy`，版本按 realm。
-// 依据：国际版 WorkBuddy AI 5.9.3 的 buildVlmGatewayHeaders 同样硬编码
+// 依据：国际版 WorkBuddy AI 5.11.4 的 buildUserAgent 同样以 applicationName 作第二段
 // `WorkBuddy/<ver>` 两段，其 app.asar 内 "WorkBuddy AI" 字符串 0 命中——旧结论
 // 「global 必须 WorkBuddy AI 平台段」已被实证推翻。
 func TestDesktopUAForGlobalAccount(t *testing.T) {
@@ -152,13 +152,13 @@ func TestDesktopUAForGlobalAccount(t *testing.T) {
 	if contains(ua, "WorkBuddy AI") {
 		t.Errorf("global desktop UA = %q, must not contain 'WorkBuddy AI'", ua)
 	}
-	if want := "WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0"; ua != want {
+	if want := "WorkBuddy/5.11.4 workbuddy-ai/5.11.4 CLI/2.176.0"; ua != want {
 		t.Errorf("global desktop UA = %q, want %q", ua, want)
 	}
 	// CN 账号：同平台段，版本取 5.8.3。
 	cn := &auth.Auth{UID: "u2", Domain: "copilot.tencent.com"}
 	cn.BackfillRealm()
-	if want := "WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0"; c.defaultWorkBuddyUAFor(cn) != want {
+	if want := "WorkBuddy/5.11.3 WorkBuddy/5.11.3 CLI/2.176.0"; c.defaultWorkBuddyUAFor(cn) != want {
 		t.Errorf("cn desktop UA = %q, want %q", c.defaultWorkBuddyUAFor(cn), want)
 	}
 }

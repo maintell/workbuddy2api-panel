@@ -200,28 +200,32 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 > 上游仓库此后已删除，上述第二轮（`ea8b1e5`）即其**删库前的最后一次更新**，本分支已完整吸收。此后本仓库与上游不再有同步关系，演进以本仓库为准。
 
-### 5.9.3 客户端对齐（2026-10-29）
+### 客户端对齐（5.11.3 / 5.11.4，2026-11-17）
 
-WorkBuddy 桌面端更新到 **5.9.3**（安装版本 `37.10.3-43`，2026-10-27 构建，内置 CLI **2.165.0**），CN 与国际版同版本。两侧都做了取证：解 `app.asar` 读 `buildVlmGatewayHeaders` / `applyGatewayHeaders` / `VlmUpstream` 源码，并用 TLS 中间人（hosts + 自建 CA + 443 终结）抓到带真实登录态的 `POST /v2/chat/completions`（**44 个头、200**）。
+WorkBuddy 桌面端更新到 **CN 5.11.3 / 国际版 5.11.4**（两侧版本号已分叉），内置 CLI 统一 **2.176.0**。取证方式：解 `app.asar` 读 `buildVlmGatewayHeaders` / `applyGatewayHeaders` / `VlmUpstream` / 新增的 `client-identity` 源码，并用 TLS 中间人（hosts + 自建 CA + 443 终结）抓到带真实登录态的 `POST /v2/chat/completions`（**47 个头、200、body 49 435 → 130 319 字节**）。
 
-| 项 | 实测（5.9.3） | 本仓库处理 |
+| 项 | 实测（5.11.x） | 本仓库处理 |
 |---|---|---|
-| User-Agent | CN `WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0`；国际 `WorkBuddy/5.9.3 workbuddy-ai/5.9.3 CLI/2.165.0` | 版本常量两侧均 5.9.3，slug 按 realm |
+| User-Agent | CN `WorkBuddy/5.11.3 WorkBuddy/5.11.3 CLI/2.176.0`；国际 `WorkBuddy/5.11.4 workbuddy-ai/5.11.4 CLI/2.176.0` | 版本常量按 realm（5.11.3 / 5.11.4），slug 按 realm |
+| `X-Client-Version` / `-Platform` / `-Product` | 5.11.x 新增头族：`5.11.4` / `windows` / `workbuddy-ai`（CN 为 `WorkBuddy`） | 新增发送（Product 与 UA 第二段同源） |
 | `X-Agent-Runtime` | `local-agent`（独立 CLI 直连时是 `other`） | 新增发送 |
 | `baggage` | `buddyId=,buddyName=,codebuddy.session_id=…,codebuddy.conversation_request_id=…` | 新增发送 |
-| 请求体 | 恒 gzip（`Content-Encoding: gzip`），55 618 字节压缩体 → 解压 133 729 | 出站压缩（失败退回明文） |
-| `extra_vars` | `{growthEvent:"[…chat_request_send…]",initiator:"user"}`，内部子调用是 `agent` | 缺省补 `initiator=user`，显式原样透传 |
-| `X-IDE-*` / `X-Private-Data` | `WorkBuddy` / `5.9.3` / `true` | 已对齐 |
+| 请求体 | 恒 gzip（`Content-Encoding: gzip`），49 435 字节压缩体 → 解压 130 319 | 出站压缩（失败退回明文） |
+| `extra_vars` | 主对话 `{growthEvent:"[…]",initiator:"user"}`；5.11.x 起另带 `harnessMetadata`（`{schemaVersion,harnessVersion,stepIndex,agent:{depth}}`），内部子调用 `initiator` 为 `agent` | 缺省补 `initiator=user`，其余原样透传（不伪造 harness 自报段） |
+| `cache_retention` | 5.11.x 新增顶层字段，实测 `"long"` | 不伪造，客户端带了照常透传 |
+| `X-IDE-*` / `X-Private-Data` | `WorkBuddy` / `5.11.3`·`5.11.4` / `true` | 已对齐 |
 | `X-Domain` | `www.codebuddy.cn`（CN）/ `www.workbuddy.ai`（国际） | 已一致 |
 | `X-Request-ID` = `X-Conversation-Message-ID` | 同值 32 hex；`X-Conversation-Request-ID` = `X-Root-Request-ID` | 已一致 |
 | billing UA | `axios/1.16.1`（主进程内置 axios，未套 WorkBuddy 指纹） | billing 域改用该值 |
 | 端点 | `www.workbuddy.cn` / `www.workbuddy.ai`；`copilot.tencent.com` / `www.codebuddy.cn` 与前者同网关（同返 openresty 401） | 保留可配置，默认未改 |
 | `X-Stainless-*` | 字段值同前（pkg 6.25.0、runtime-version `v22.21.1`） | 值已一致（大小写仍由 Go canonicalize） |
 
-实测踩到的两个坑，供下次复核参考：
+实测踩到的几个坑，供下次复核参考：
 
 1. **CLI 子进程不认 `NODE_EXTRA_CA_CERTS` / `NODE_TLS_REJECT_UNAUTHORIZED`**——环境由 `buildCliProcessEnv` 重建并主动剔除这两个变量，统一改用 `~/.workbuddy[ -ai]/system-ca-bundle.pem`（从系统证书库导出，存在即复用）。国际版该文件默认**不存在**，需先建出来，否则模型请求直接 `self signed certificate` 失败。
 2. **国际版没有 failover 备线**：CN 侧主链路失败会重放到 `wb.tencentbuddy.com`，国际版日志是 `Chat origin replay skipped: no backup`，失败即报「Network connection failed」。
+3. **5.11.x 换了 CLI 环境构建器**（`cli-process-env.js` → `protocol.js`）：CN 桌面端的 CLI 子进程不再接受本机 CA，抓桌面层只能靠国际版；CN 用 CLI 直连（`ACC_PRODUCT_CONFIG_V3` 指向本地录制器）仍可拿到完整真实请求。
+4. **CA bundle 只读 Root 存储**：`system-ca-bundle.js` 现在仅枚举 `Cert:\LocalMachine\Root` + `Cert:\CurrentUser\Root`，且 `$ErrorActionPreference = "Stop"`——任一 store 读取失败会让 bundle 整份退回 `complete:false`（可能为空）。
 
 ## 架构总览
 
