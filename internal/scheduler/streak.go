@@ -16,23 +16,14 @@ import (
 )
 
 // RunStreakBonusNow 对所有可用账号执行连登兑换 + 抽奖（幂等：locked/无次数自动跳过）。
-// 由签到排程（RunCheckinNow）末尾调用；也可面板手动触发。
+// 由签到排程（面板手动全量签到）末尾调用；窗口排程则按号跟随各自签到时点
+// （checkin_window.go 的 streakFor），避免整池在窗口末尾再叠一簇同步 RPC。
 func (s *Scheduler) RunStreakBonusNow() {
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
 			continue
 		}
-		a := s.cfg.Pool.AuthByUID(st.UID)
-		if a == nil || a.AccessTokenValue() == "" {
-			continue
-		}
-		if a.IsGlobal() {
-			continue // D4 门控：global 无 CN 任务体系，不发起任何上游调用
-		}
-		if a.IsEnterpriseSession() {
-			continue // 企业版 / 企业切换会话门控：无成长体系（/activity/growth/streak 企业号 403；切换会话 200 但不计分）
-		}
-		s.streakBonusAccount(a)
+		s.streakFor(st.UID)
 	}
 }
 

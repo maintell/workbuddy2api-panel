@@ -975,6 +975,9 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
                   <input type="checkbox" name="checkin_enabled"></div>
                 <label class="fld"><span class="lb">签到时点（小时，逗号分隔）</span>
                   <input name="checkin_hours" placeholder="9, 21"></label>
+                <label class="fld"><span class="lb">窗口内错峰（分钟）</span>
+                  <input name="checkin_spread_minutes" type="number" min="0" max="720" placeholder="120">
+                  <span class="hint">0 = 不分散</span></label>
               </div>
               <div>
                 <div class="switch"><span class="lb">Token 保活</span>

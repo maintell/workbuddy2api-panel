@@ -70,7 +70,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 🔄 **多账号池** | 快过期积分加权 + 成本分层 + 加权随机选号，Top-5 候选 + 防惊群 |
 | 🛡️ **熔断与冷却** | 429 软冷却 600s 起指数退避（封顶 `soft_rate_max`）、404 固定 60s 短冷却、402 硬冷却至次日 04:00、连续失败熔断、在途租约限流 |
 | 🧲 **会话粘性** | 同一会话（`conversation_id`）尽量绑定同一账号，TTL 滚动续期，失败自动解绑，可镜像 Redis 防重启丢失 |
-| ⏰ **定时任务** | 签到（09/21 点，末尾自动跑**连登管家**：兑换已解锁档位 + 抽完抽奖次数）+ 活跃上报（10 点，点亮连登 / 解锁领养 + streak 自检）+ 猫猫旅行（09/21 点，独立排程）+ token 保活（22 点），四类独立开关 |
+| ⏰ **定时任务** | 签到（09/21 点起窗口内错峰，末尾自动跑**连登管家**：兑换已解锁档位 + 抽完抽奖次数）+ 活跃上报（10 点，点亮连登 / 解锁领养 + streak 自检）+ 猫猫旅行（09/21 点，独立排程）+ token 保活（22 点），四类独立开关 |
 | ⚡ **流式 + 非流式** | 出站强制 `stream:true`；SSE 帧按规范白名单重建；非流式由本地聚合为单响应 |
 | 🧠 **推理模型兼容** | DeepSeek 思维链注入（`thinking.type=enabled` + 默认档）、`reasoning_content` 多轮回填、effort 档位自动降级 |
 | 🔍 **联网搜索** | `POST /v1/search/messages` 把上游 `/agenttool/v1/search` 包成 Anthropic Messages 兼容形态（DSH 等客户端的搜索 provider 零改动接入）；复用账号池选号 / 在途租约 / token 刷新 / 错误冷却，出站请求头对齐官方客户端 |
@@ -413,6 +413,7 @@ curl -s http://localhost:7863/v1/search/messages \
 | `cooldown.soft_rate` | `600s` | 软限流（429 / 限流文案）冷却基数；同一账号连续触发按 2 倍指数退避 |
 | `cooldown.soft_rate_max` | `2h` | 软冷却指数退避封顶 |
 | `schedule.checkin_hours` | `[9, 21]` | 每日本地时区整点签到 + 余额查询解冻。空数组 / `null` = 未配置回落默认（不是禁用） |
+| `schedule.checkin_spread_minutes` | `120` | 签到窗口内错峰分钟数：每号按 `(uid, 日期, 窗口)` 哈希偏移，顺序不跟 UID 序；`0` = 不分散。偏移最晚截到 23:45，不跨自然日 |
 | `schedule.travel_hours` | `[9, 21]` | 每日本地时区整点推进猫猫旅行状态机（领养 / 派出 / 领奖） |
 | `schedule.activity_hours` | `[10]` | 每日本地时区整点对话活跃上报（点亮连登 + 解锁 `first_buddy`） |
 | `schedule.keepalive_hours` | `[22]` | 每日本地时区整点刷新 token 保活 |
@@ -600,11 +601,23 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 
 | 任务 | 开关（默认 true） | 时刻（默认） | 行为 |
 |---|---|---|---|
-| 签到 | `schedule.checkin_enabled` | `checkin_hours` `[9, 21]` 整点 | 签到 + 余额查询；余额恢复则解冻冷却账号。**末尾追加连登管家**（见下） |
+| 签到 | `schedule.checkin_enabled` | `checkin_hours` `[9, 21]` 整点起 | 窗口内每号按确定性偏移错峰签到（`checkin_spread_minutes`，默认 120）+ 余额查询解冻；**已签号不重复调用**，21 点窗口只补失败号；成功后按号跑**连登管家**（见下） |
 | 活跃上报 | `schedule.activity_enabled` | `activity_hours` `[10]` 整点 | 对话活跃上报（`chat_request_send` 事件，必须含 `userId`）；点亮连登 + 解锁 `first_buddy`；每号每天 1 次 |
 | 猫猫旅行 | `schedule.travel_enabled` | `travel_hours` `[9, 21]` 整点 | 独立排程：无猫领养 / `idle` 派出 / `arrived` 领奖 |
 | 保活 | `schedule.keepalive_enabled` | `keepalive_hours` `[22]` 整点 | 全账号刷新 token；session 失效**连续 3 次**才自动禁用 |
 | 夜猫子 | `schedule.blackcat_enabled` | `blackcat_hours` `[23]` 整点 | **先查任务进度再决定**：`black_cat` 未达标才在 23:00–08:00 计数窗口内补足 glm-5.2 短对话（每天 1 次累计 3 天，漏跑次日窗口自动补） |
+
+#### 签到窗口错峰（`schedule.checkin_spread_minutes`）
+
+原实现是「整点全池同步 sweep」：所有账号同一秒开始、每天同一时刻、每天同一顺序，且每天固定打两轮（第二轮必然被上游幂等拒绝）。这三条零方差比请求头更容易被风控判定为机器行为，因此签到改为窗口内错峰：
+
+- **偏移**：每号在窗口内的偏移由 `(uid, 日期, 窗口小时)` 哈希派生——同一天重启不重抽，跨天必然变化（固定时刻本身是特征）；
+- **顺序**：按偏移排序，同时刻按哈希破平局，**不跟随 UID 序**（连续多天同一排列是机器指纹）；
+- **节流**：账号间随机 2–9 秒，同一时刻只有一个签到请求在途；
+- **不重复**：当日已签的账号不进计划，21 点窗口因此只补失败号，`daily-checkin` 调用量从每天 2N 降到约 1N（连登管家也随各号签到时点执行，不再整池叠一簇）；
+- **不跨零点**：偏移最晚截到 23:45（跨零点 = 当天漏签，连登会断）。
+
+`0` = 不分散（整点起按节流逐个签），保持旧行为。签到窗口是长任务，主循环不会等它跑完——同日的活跃/保活整点照常触发。
 
 #### 禁用账号与保号任务（`schedule.include_disabled_in_tasks`）
 
@@ -614,7 +627,7 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 
 如果采用「**一次只放开一个账号、用禁用做流量开关**」的轮换方式（同 IP 多号怕触发风控），闲置待命的号恰恰是最需要签到的——把它设为 `true`，禁用号仍会签到 / 保活 / 刷新余额，**但依旧不参与选号**（`pool` 选号侧的 disabled 过滤不受本开关影响）。
 
-> 该开关**只覆盖调度器的这四类任务**。猫猫旅行、夜猫子、连登管家（挂在签到末尾的 `RunStreakBonusNow`）与成长任务队列**仍按原样跳过禁用账号**——若也需要，请另行提出。
+> 该开关**只覆盖调度器的这四类任务**。猫猫旅行、夜猫子、连登管家（随各号签到时点执行）与成长任务队列**仍按原样跳过禁用账号**——若也需要，请另行提出。
 
 #### 暂停选号（账号级 `paused`，无需配置）
 

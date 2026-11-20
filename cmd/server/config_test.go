@@ -932,3 +932,58 @@ func TestClientIdentityConfig(t *testing.T) {
 		t.Errorf("env override 未生效: %+v", envCfg.Features)
 	}
 }
+
+// TestScheduleCheckinSpreadDefault 缺省 120 分钟：窗口内每号按其确定性偏移错峰。
+func TestScheduleCheckinSpreadDefault(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(fp, []byte(`{"schedule":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Schedule.CheckinSpreadMinutes; got != 120 {
+		t.Errorf("checkin_spread_minutes=%d want 120", got)
+	}
+}
+
+// TestScheduleCheckinSpreadExplicitZero 显式 0 = 不分散，必须保留——
+// 用「<=0 回落默认」会把「关闭错峰」静默变成「错峰 2 小时」。
+func TestScheduleCheckinSpreadExplicitZero(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(fp, []byte(`{"schedule":{"checkin_spread_minutes":0}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Schedule.CheckinSpreadMinutes; got != 0 {
+		t.Errorf("checkin_spread_minutes=%d want 0（显式关闭不许被回落）", got)
+	}
+}
+
+// TestScheduleCheckinSpreadInvalid 负值/超上限启动即报错，别静默当成别的值。
+func TestScheduleCheckinSpreadInvalid(t *testing.T) {
+	for _, body := range []string{
+		`{"schedule":{"checkin_spread_minutes":-1}}`,
+		`{"schedule":{"checkin_spread_minutes":721}}`,
+	} {
+		dir := t.TempDir()
+		fp := filepath.Join(dir, "c.json")
+		if err := os.WriteFile(fp, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(fp)
+		if err == nil {
+			t.Errorf("%s: want error", body)
+			continue
+		}
+		if !strings.Contains(err.Error(), "checkin_spread_minutes") {
+			t.Errorf("%s: error 未指向字段: %v", body, err)
+		}
+	}
+}

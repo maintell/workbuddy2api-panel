@@ -75,6 +75,11 @@ type Config struct {
 		KeepaliveHours []int `json:"keepalive_hours"` // [22]
 		BlackcatHours  []int `json:"blackcat_hours"`  // [23] 夜猫子窗口（23:00–08:00 计数）
 		GrowthHours    []int `json:"growth_hours"`    // [1] 成长任务队列（Sequential 族每日零点解锁，01:00 自动扫描执行）
+		// CheckinSpreadMinutes 签到窗口分散分钟数：窗口内每个账号按 (uid, 日期,
+		// 窗口) 确定性派生的偏移错峰，顺序也不跟随 UID 序
+		// （见 internal/scheduler/checkin_window.go）。0 = 不分散。
+		// 默认 120：把「整点全池同秒 sweep」这个最强的同源特征打散到两小时内。
+		CheckinSpreadMinutes int `json:"checkin_spread_minutes"` // 缺省 120；0 = 不分散
 		// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/BlackcatEnabled 显式禁用开关（缺省 true）。
 		//
 		// 为什么用独立 bool 而不是空数组/哨兵值表意"禁用"：
@@ -303,6 +308,7 @@ func Default() *Config {
 	// 只有显式 false 才关闭来源记录。
 	c.Logging.RequestClientInfo = true
 	c.Schedule.CheckinHours = []int{9, 21}
+	c.Schedule.CheckinSpreadMinutes = 120
 	c.Schedule.TravelHours = []int{9, 21}
 	c.Schedule.ActivityHours = []int{10}
 	c.Schedule.KeepaliveHours = []int{22}
@@ -684,6 +690,9 @@ func (c *Config) normalize() error {
 	if err := c.validateScheduleHours(); err != nil {
 		return err
 	}
+	if err := c.validateCheckinSpread(); err != nil {
+		return err
+	}
 	// 身份词改写目标词：空值回落内置 WorkBuddy（面板「留空 = 默认」语义，与
 	// upstream 侧 buildIdentityRules 的兜底同口径）。词表本身留空 = 只用内置表，
 	// 不需要额外归一。
@@ -753,6 +762,20 @@ func checkHourRange(field, switchKey string, hours []int) error {
 		if h < 0 || h > 23 {
 			return fmt.Errorf("%s: %d 不是合法小时（0-23）；如要关闭该任务请设 schedule.%s=false", field, h, switchKey)
 		}
+	}
+	return nil
+}
+
+// validateCheckinSpread 校验签到窗口分散时长。
+//
+// 0 是合法值（不分散，保持旧行为）；负数与超上限快速失败——静默夹取会让面板
+// 显示的值与真实排程不一致，排查「为什么没按我配的时间签到」时最费时间。
+// 上限 720 分钟（12h）：再大就会撞到下一个时点或跨零点，窗口 runner 运行期
+// 还会按当日 23:45 再夹一次（见 checkin_window.go 的 checkinDayCap）。
+func (c *Config) validateCheckinSpread() error {
+	m := c.Schedule.CheckinSpreadMinutes
+	if m < 0 || m > 720 {
+		return fmt.Errorf("schedule.checkin_spread_minutes: %d 超出范围（0-720 分钟）；0 = 不分散，关闭签到请设 schedule.checkin_enabled=false", m)
 	}
 	return nil
 }

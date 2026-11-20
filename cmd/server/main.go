@@ -32,7 +32,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.15.8-panel"
+const appVersion = "1.15.9-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -196,6 +196,7 @@ func main() {
 		Pool:           p,
 		Upstream:       up,
 		CheckinHours:   cfg.Schedule.CheckinHours,
+		CheckinSpread:  time.Duration(cfg.Schedule.CheckinSpreadMinutes) * time.Minute,
 		TravelHours:    cfg.Schedule.TravelHours,
 		ActivityHours:  cfg.Schedule.ActivityHours,
 		KeepaliveHours: cfg.Schedule.KeepaliveHours,
@@ -215,8 +216,11 @@ func main() {
 	switch {
 	case !cfg.Schedule.CheckinEnabled:
 		log.Printf("签到已禁用（schedule.checkin_enabled=false）")
+	case cfg.Schedule.CheckinSpreadMinutes > 0:
+		log.Printf("签到已启用：%v 点起窗口内错峰 %d 分钟（每号确定性偏移，已签号不重复打上游）",
+			cfg.Schedule.CheckinHours, cfg.Schedule.CheckinSpreadMinutes)
 	default:
-		log.Printf("签到已启用：%v 点（签到 + 余额查询解冻）", cfg.Schedule.CheckinHours)
+		log.Printf("签到已启用：%v 点（签到 + 余额查询解冻，未开启错峰）", cfg.Schedule.CheckinHours)
 	}
 	switch {
 	case !cfg.Schedule.TravelEnabled:
@@ -561,6 +565,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	sch.SetBalanceInterval(newCfg.BalanceRefreshInterval)
 	sch.SetTaskSweepInterval(newCfg.TaskSweepInterval)
 	sch.SetIncludeDisabledInTasks(newCfg.Schedule.IncludeDisabledInTasks)
+	sch.SetCheckinSpread(time.Duration(newCfg.Schedule.CheckinSpreadMinutes) * time.Minute)
 
 	return restartRequiredFields(newCfg), nil
 }

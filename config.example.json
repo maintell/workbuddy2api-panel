@@ -22,6 +22,7 @@
   },
   "schedule": {
     "checkin_hours": [9, 21],
+    "checkin_spread_minutes": 120,
     "growth_hours": [1],
     "travel_hours": [9, 21],
     "activity_hours": [10],

@@ -22,9 +22,13 @@ import (
 // 任务开关用「禁用」命名而非「启用」：零值 Config 即四类任务都启用（hours 回落默认），
 // 与引入开关前的行为逐字一致（老调用方/老测试无需改动）。
 type Config struct {
-	Pool           *pool.Pool
-	Upstream       *upstream.Client
-	CheckinHours   []int // 默认 [9, 21]
+	Pool         *pool.Pool
+	Upstream     *upstream.Client
+	CheckinHours []int // 默认 [9, 21]
+	// CheckinSpread 签到窗口分散时长：窗口内每个账号按确定性偏移错峰（见
+	// checkin_window.go）。0 = 不分散（整点起按节流逐个签）。默认由 config 的
+	// schedule.checkin_spread_minutes（120）折算。
+	CheckinSpread  time.Duration
 	TravelHours    []int // 默认 [9,21]：一趟派出 + 一趟领奖闭环
 	ActivityHours  []int // 默认 [10]
 	KeepaliveHours []int // 默认 [22]
@@ -97,6 +101,12 @@ type Scheduler struct {
 	// 供面板「到期提醒」标注数据年龄：卡片展示的是这份快照，必须让年龄可读，
 	// 否则界面 5 秒轮询会让人误以为数据也是 5 秒级新鲜。
 	lastBalanceRefresh atomic.Int64
+
+	// checkinRun 窗口单飞：同一时刻只允许一个签到窗口在跑（9 点窗口跨度大时
+	// 可能与 21 点窗口重叠，叠加并发会重现「多号同秒到达」的旧特征）。
+	checkinRun sync.Mutex
+	// checkinWg 跟踪仍在错峰的窗口 goroutine（测试据此确认退出）。
+	checkinWg sync.WaitGroup
 }
 
 // New 构建。
@@ -400,25 +410,34 @@ func (s *Scheduler) Run(ctx context.Context) {
 				return // ctx 取消：放弃本批，优雅退出
 			}
 			// 唤醒时全部并行派发：每类一个 goroutine，慢任务族（如活跃上报
-			// 多号 × 间隔 ≈ 数分钟睡眠）不再阻塞同槽其他任务族；返回前等全部
-			// 任务收尾（下一轮 nextWake 照旧从"现在"起算，多轮重叠的风险与
-			// 串行版相同——nextWake 只挑现在之后的时点）。
-			s.runBatch(ctx, kinds)
+			// 多号 × 间隔 ≈ 数分钟睡眠）不再阻塞同槽其他任务族；返回前等除签到
+			// 以外的任务收尾（签到窗口在独立 goroutine 里错峰数小时，见 runBatch）。
+			s.runBatch(ctx, next, kinds)
 		}
 	}
 }
 
 // runBatch 并行派发一批任务（同一唤醒时刻的多类任务），等全部完成返回。
 // ctx 取消时由各任务内部的可取消等待快速收尾。
-func (s *Scheduler) runBatch(ctx context.Context, kinds []taskKind) {
+//
+// 签到是例外：它在窗口内要错峰到数小时（checkin_window.go），若进 wg，主循环
+// 会等窗口跑完才去算下一个时点，同日的活跃/保活整点会被整个拖过去（错过即不补）。
+// 因此签到单独起 goroutine，由 checkinRun 单飞与 checkinWg 收尾。
+func (s *Scheduler) runBatch(ctx context.Context, planned time.Time, kinds []taskKind) {
 	var wg sync.WaitGroup
 	for _, k := range kinds {
+		if k == taskCheckin {
+			s.checkinWg.Add(1)
+			go func() {
+				defer s.checkinWg.Done()
+				s.runCheckinWindow(ctx, planned)
+			}()
+			continue
+		}
 		wg.Add(1)
 		go func(k taskKind) {
 			defer wg.Done()
 			switch k {
-			case taskCheckin:
-				s.RunCheckinNow()
 			case taskTravel:
 				s.RunTravelNow()
 			case taskActivity:
@@ -464,7 +483,6 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // 末尾追加连登管家（streak.go）：可兑换档位自动兑换 + 抽奖次数自动抽完——
 // 连登兑换按天数解锁，挂在每日签到后即「到天数那天自动完成兑换→抽奖闭环」。
 func (s *Scheduler) RunCheckinNow() {
-	expiringSoon := s.ExpiringSoonWindow()
 	includeDisabled := s.includeDisabledInTasks()
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled && !includeDisabled {
@@ -480,43 +498,9 @@ func (s *Scheduler) RunCheckinNow() {
 		if a.IsGlobal() {
 			continue
 		}
-		// 企业版无签到体系：上游对 POST /v2/billing/meter/daily-checkin 直接
-		// 400 code 10001「企业账号不支持该操作」。跳过签到，但**不 continue**——
-		// 下方余额查询照常跑（企业额度走 get-enterprise-user-usage 口径，且是
-		// credit_floor 判定与面板额度展示的唯一数据源）。
-		if !a.IsEnterprise() {
-			if err := s.cfg.Upstream.DailyCheckin(a); err != nil {
-				// "今天已签到"是幂等成功（上游对重复签到返回 code!=0），不再当失败打 error 行。
-				if upstream.IsAlreadyCheckin(err) {
-					s.cfg.Pool.NoteCheckinDone(st.UID)
-					log.Printf("checkin %s: 今天已签到（幂等）", logfmt.Label(st.UID, st.Nickname))
-				} else {
-					log.Printf("checkin %s: %v", logfmt.Label(st.UID, st.Nickname), err)
-				}
-				// 其余业务错误也继续走余额查询
-			} else {
-				// 首次签到成功此前静默——排查「签到到底跑没跑」时无迹可循（幂等行只在
-				// 重复触发时出现），成功也落一行。
-				s.cfg.Pool.NoteCheckinDone(st.UID)
-				log.Printf("checkin %s: 签到成功", logfmt.Label(st.UID, st.Nickname))
-			}
-		}
-		// 分桶查余额：配置窗口内的积分单独标记，同时记录最早未来到期批次与
-		// 按自然日聚合的全部批次（首页快照与「检查」共用同一口径）。
-		remain, total, expiring, earliestAt, earliestRemaining, buckets, err := s.cfg.Upstream.UserResourceSnapshot(a, expiringSoon)
-		if err != nil {
-			log.Printf("user-resource %s: %v", logfmt.Label(st.UID, st.Nickname), err)
-			continue
-		}
-		s.cfg.Pool.ReenableIfCredits(st.UID, remain, total)
-		s.cfg.Pool.SetCreditsSnapshot(st.UID, pool.CreditsSnapshot{
-			Remain:            remain,
-			Total:             total,
-			Expiring:          expiring,
-			EarliestAt:        earliestAt,
-			EarliestRemaining: earliestRemaining,
-			ExpiryBuckets:     poolExpiryBuckets(buckets),
-		})
+		// 手动入口保持「全量扫一遍」的幂等语义（不看 CheckinDone）：面板按钮是显式
+		// 用户动作，重复签到由上游幂等拒绝兜底。签到/余额细节见 checkinOne。
+		s.checkinOne(st)
 	}
 	s.RunStreakBonusNow()
 }
@@ -652,7 +636,6 @@ func poolExpiryBuckets(in []upstream.ExpiryBucket) []pool.ExpiryBucket {
 // 供两类入口复用：后台周期任务（StartBalanceRefresh）与面板手动全量刷新。
 func (s *Scheduler) RunBalanceRefreshNow() {
 	var wg sync.WaitGroup
-	expiringSoon := s.ExpiringSoonWindow()
 	includeDisabled := s.includeDisabledInTasks()
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled && !includeDisabled {
@@ -663,23 +646,10 @@ func (s *Scheduler) RunBalanceRefreshNow() {
 			continue
 		}
 		wg.Add(1)
-		go func(a *auth.Auth, uid string) {
+		go func(uid string) {
 			defer wg.Done()
-			remain, total, expiring, earliestAt, earliestRemaining, buckets, err := s.cfg.Upstream.UserResourceSnapshot(a, expiringSoon)
-			if err != nil {
-				log.Printf("balance %s: %v", logfmt.Label(uid, a.Nickname), err)
-				return
-			}
-			s.cfg.Pool.ReenableIfCredits(uid, remain, total)
-			s.cfg.Pool.SetCreditsSnapshot(uid, pool.CreditsSnapshot{
-				Remain:            remain,
-				Total:             total,
-				Expiring:          expiring,
-				EarliestAt:        earliestAt,
-				EarliestRemaining: earliestRemaining,
-				ExpiryBuckets:     poolExpiryBuckets(buckets),
-			})
-			}(a, st.UID)
+			s.refreshBalanceFor(uid, "balance")
+		}(st.UID)
 	}
 	wg.Wait()
 	s.lastBalanceRefresh.Store(time.Now().UnixNano())
