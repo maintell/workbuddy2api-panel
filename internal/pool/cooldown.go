@@ -64,6 +64,29 @@ func (p *Pool) NoteCheckinDone(uid string) {
 	}
 }
 
+// NoteCheckinAttempt 记录一次补签尝试并设置下次允许时刻，返回今日累计次数。
+//
+// 只服务补签循环（配置时点的正常窗口不记账）。跨零点自然重置；持久化到
+// state.json——否则崩溃重启会把「每日上限」重置成无限重试，对凭证已死的号
+// 变成持续轰炸。
+func (p *Pool) NoteCheckinAttempt(uid string, nextAt time.Time) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return 0
+	}
+	day := time.Now().Format("2006-01-02")
+	if e.checkinAttemptDay != day {
+		e.checkinAttemptDay = day
+		e.checkinAttempts = 0
+	}
+	e.checkinAttempts++
+	e.checkinNextAt = nextAt
+	p.dirty.Store(true)
+	return e.checkinAttempts
+}
+
 // CreditsSnapshot 一次余额查询的完整结果（含按日到期批次）。
 // 调度器/面板把 upstream.UserResourceSnapshot 的输出转换成本结构后写入池。
 type CreditsSnapshot struct {

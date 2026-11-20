@@ -28,7 +28,11 @@ type Config struct {
 	// CheckinSpread 签到窗口分散时长：窗口内每个账号按确定性偏移错峰（见
 	// checkin_window.go）。0 = 不分散（整点起按节流逐个签）。默认由 config 的
 	// schedule.checkin_spread_minutes（120）折算。
-	CheckinSpread  time.Duration
+	CheckinSpread time.Duration
+	// CheckinCatchup 补签轮询间隔：0 = 关闭（见 checkin_catchup.go）。默认由
+	// config 的 schedule.checkin_catchup_minutes（30）折算；启用后启动补一轮、
+	// 每 interval 扫一次未签号，23 点最后一班车。
+	CheckinCatchup time.Duration
 	TravelHours    []int // 默认 [9,21]：一趟派出 + 一趟领奖闭环
 	ActivityHours  []int // 默认 [10]
 	KeepaliveHours []int // 默认 [22]
@@ -88,6 +92,7 @@ type Scheduler struct {
 	rearmSchedule chan struct{}
 	rearmBalance  chan struct{}
 	rearmSweep    chan struct{}
+	rearmCatchup  chan struct{}
 
 	// balanceInterval 余额刷新间隔（纳秒，0=暂停）。atomic 读写：执行循环每轮读当前值，
 	// SetBalanceInterval 可任意时刻热改（面板保存配置）。
@@ -104,9 +109,12 @@ type Scheduler struct {
 
 	// checkinRun 窗口单飞：同一时刻只允许一个签到窗口在跑（9 点窗口跨度大时
 	// 可能与 21 点窗口重叠，叠加并发会重现「多号同秒到达」的旧特征）。
+	// 补签循环共用同一把锁：错峰进行中不插队。
 	checkinRun sync.Mutex
 	// checkinWg 跟踪仍在错峰的窗口 goroutine（测试据此确认退出）。
 	checkinWg sync.WaitGroup
+	// checkinCatchupWg 跟踪补签循环 goroutine（测试据此确认退出）。
+	checkinCatchupWg sync.WaitGroup
 }
 
 // New 构建。
@@ -132,6 +140,7 @@ func New(cfg Config) *Scheduler {
 		rearmSchedule: make(chan struct{}, 1),
 		rearmBalance:  make(chan struct{}, 1),
 		rearmSweep:    make(chan struct{}, 1),
+		rearmCatchup:  make(chan struct{}, 1),
 	}
 }
 

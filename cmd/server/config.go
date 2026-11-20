@@ -80,6 +80,12 @@ type Config struct {
 		// （见 internal/scheduler/checkin_window.go）。0 = 不分散。
 		// 默认 120：把「整点全池同秒 sweep」这个最强的同源特征打散到两小时内。
 		CheckinSpreadMinutes int `json:"checkin_spread_minutes"` // 缺省 120；0 = 不分散
+		// CheckinCatchupEnabled / CheckinCatchupMinutes 每日补签兜底：启动补一轮 +
+		// 每 minutes 扫一次未签号（00:05–23:30），23 点最后一班车
+		// （见 internal/scheduler/checkin_catchup.go）。防的是「时点已过才启动」
+		// 「最后一轮全失败」这两类漏签。
+		CheckinCatchupEnabled bool `json:"checkin_catchup_enabled"` // 缺省 true；false = 关闭
+		CheckinCatchupMinutes int  `json:"checkin_catchup_minutes"` // 缺省 30；<=0 回落 30
 		// CheckinEnabled/TravelEnabled/ActivityEnabled/KeepaliveEnabled/BlackcatEnabled 显式禁用开关（缺省 true）。
 		//
 		// 为什么用独立 bool 而不是空数组/哨兵值表意"禁用"：
@@ -282,6 +288,7 @@ type Config struct {
 	SessionGCInterval      time.Duration `json:"-"`
 	BalanceRefreshInterval time.Duration `json:"-"` // 0 = 不启动（enabled=false）
 	TaskSweepInterval      time.Duration `json:"-"` // 0 = 不启动（task_sweep_enabled=false）
+	CheckinCatchupInterval time.Duration `json:"-"` // 0 = 不启动（checkin_catchup_enabled=false）
 	ExpiringSoonDur        time.Duration `json:"-"`
 	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
@@ -309,6 +316,8 @@ func Default() *Config {
 	c.Logging.RequestClientInfo = true
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.CheckinSpreadMinutes = 120
+	c.Schedule.CheckinCatchupEnabled = true
+	c.Schedule.CheckinCatchupMinutes = 30
 	c.Schedule.TravelHours = []int{9, 21}
 	c.Schedule.ActivityHours = []int{10}
 	c.Schedule.KeepaliveHours = []int{22}
@@ -693,6 +702,17 @@ func (c *Config) normalize() error {
 	if err := c.validateCheckinSpread(); err != nil {
 		return err
 	}
+	if err := c.validateCheckinCatchup(); err != nil {
+		return err
+	}
+	// 签到每日兜底：校验通过后再回落（0 = 未配置 → 30），负值不会被静默吞成 30；
+	// 关闭时 interval 保持 0（main 不启动循环）。
+	if c.Schedule.CheckinCatchupEnabled {
+		if c.Schedule.CheckinCatchupMinutes <= 0 {
+			c.Schedule.CheckinCatchupMinutes = 30
+		}
+		c.CheckinCatchupInterval = time.Duration(c.Schedule.CheckinCatchupMinutes) * time.Minute
+	}
 	// 身份词改写目标词：空值回落内置 WorkBuddy（面板「留空 = 默认」语义，与
 	// upstream 侧 buildIdentityRules 的兜底同口径）。词表本身留空 = 只用内置表，
 	// 不需要额外归一。
@@ -776,6 +796,16 @@ func (c *Config) validateCheckinSpread() error {
 	m := c.Schedule.CheckinSpreadMinutes
 	if m < 0 || m > 720 {
 		return fmt.Errorf("schedule.checkin_spread_minutes: %d 超出范围（0-720 分钟）；0 = 不分散，关闭签到请设 schedule.checkin_enabled=false", m)
+	}
+	return nil
+}
+
+// validateCheckinCatchup 校验补签轮询间隔。0 = 未配置（回落 30 分钟），
+// 负值与超上限快速失败；真正关闭请用 checkin_catchup_enabled=false。
+func (c *Config) validateCheckinCatchup() error {
+	m := c.Schedule.CheckinCatchupMinutes
+	if m < 0 || m > 720 {
+		return fmt.Errorf("schedule.checkin_catchup_minutes: %d 超出范围（0-720 分钟）；0 = 未配置回落 30，关闭请设 schedule.checkin_catchup_enabled=false", m)
 	}
 	return nil
 }

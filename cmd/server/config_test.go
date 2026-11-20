@@ -987,3 +987,87 @@ func TestScheduleCheckinSpreadInvalid(t *testing.T) {
 		}
 	}
 }
+
+// TestScheduleCheckinCatchupDefault 每日兜底默认开启、30 分钟一轮。
+func TestScheduleCheckinCatchupDefault(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(fp, []byte(`{"schedule":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Schedule.CheckinCatchupEnabled || c.Schedule.CheckinCatchupMinutes != 30 {
+		t.Errorf("catchup=%v/%d want true/30", c.Schedule.CheckinCatchupEnabled, c.Schedule.CheckinCatchupMinutes)
+	}
+	if c.CheckinCatchupInterval != 30*time.Minute {
+		t.Errorf("interval=%v want 30m", c.CheckinCatchupInterval)
+	}
+}
+
+// TestScheduleCheckinCatchupDisabled 关闭后不启动补签循环（interval=0）。
+func TestScheduleCheckinCatchupDisabled(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "c.json")
+	if err := os.WriteFile(fp, []byte(`{"schedule":{"checkin_catchup_enabled":false}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Schedule.CheckinCatchupEnabled || c.CheckinCatchupInterval != 0 {
+		t.Errorf("disabled 应不启动: enabled=%v interval=%v", c.Schedule.CheckinCatchupEnabled, c.CheckinCatchupInterval)
+	}
+}
+
+// TestScheduleCheckinCatchupMinutes 0 回落 30；显式值保留。
+func TestScheduleCheckinCatchupMinutes(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{"schedule":{"checkin_catchup_minutes":0}}`, 30},
+		{`{"schedule":{"checkin_catchup_minutes":15}}`, 15},
+	} {
+		dir := t.TempDir()
+		fp := filepath.Join(dir, "c.json")
+		if err := os.WriteFile(fp, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(fp)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.body, err)
+		}
+		if c.Schedule.CheckinCatchupMinutes != tc.want {
+			t.Errorf("%s: minutes=%d want %d", tc.body, c.Schedule.CheckinCatchupMinutes, tc.want)
+		}
+		if c.CheckinCatchupInterval != time.Duration(tc.want)*time.Minute {
+			t.Errorf("%s: interval=%v want %dm", tc.body, c.CheckinCatchupInterval, tc.want)
+		}
+	}
+}
+
+// TestScheduleCheckinCatchupInvalid 负值/超上限启动即报错。
+func TestScheduleCheckinCatchupInvalid(t *testing.T) {
+	for _, body := range []string{
+		`{"schedule":{"checkin_catchup_minutes":-1}}`,
+		`{"schedule":{"checkin_catchup_minutes":721}}`,
+	} {
+		dir := t.TempDir()
+		fp := filepath.Join(dir, "c.json")
+		if err := os.WriteFile(fp, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Load(fp)
+		if err == nil {
+			t.Errorf("%s: want error", body)
+			continue
+		}
+		if !strings.Contains(err.Error(), "checkin_catchup_minutes") {
+			t.Errorf("%s: error 未指向字段: %v", body, err)
+		}
+	}
+}

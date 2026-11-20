@@ -414,6 +414,8 @@ curl -s http://localhost:7863/v1/search/messages \
 | `cooldown.soft_rate_max` | `2h` | 软冷却指数退避封顶 |
 | `schedule.checkin_hours` | `[9, 21]` | 每日本地时区整点签到 + 余额查询解冻。空数组 / `null` = 未配置回落默认（不是禁用） |
 | `schedule.checkin_spread_minutes` | `120` | 签到窗口内错峰分钟数：每号按 `(uid, 日期, 窗口)` 哈希偏移，顺序不跟 UID 序；`0` = 不分散。偏移最晚截到 23:45，不跨自然日 |
+| `schedule.checkin_catchup_enabled` | `true` | 每日补签兜底：启动补一轮 + 周期扫未签号 + 23:00 最后一班车；进程整天不在时需外部定时器打 `?pending=1` |
+| `schedule.checkin_catchup_minutes` | `30` | 兜底扫描间隔（分钟）；`0` = 未配置回落 30，关闭请用 `checkin_catchup_enabled=false` |
 | `schedule.travel_hours` | `[9, 21]` | 每日本地时区整点推进猫猫旅行状态机（领养 / 派出 / 领奖） |
 | `schedule.activity_hours` | `[10]` | 每日本地时区整点对话活跃上报（点亮连登 + 解锁 `first_buddy`） |
 | `schedule.keepalive_hours` | `[22]` | 每日本地时区整点刷新 token 保活 |
@@ -601,7 +603,7 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 
 | 任务 | 开关（默认 true） | 时刻（默认） | 行为 |
 |---|---|---|---|
-| 签到 | `schedule.checkin_enabled` | `checkin_hours` `[9, 21]` 整点起 | 窗口内每号按确定性偏移错峰签到（`checkin_spread_minutes`，默认 120）+ 余额查询解冻；**已签号不重复调用**，21 点窗口只补失败号；成功后按号跑**连登管家**（见下） |
+| 签到 | `schedule.checkin_enabled` | `checkin_hours` `[9, 21]` 整点起 | 窗口内每号按确定性偏移错峰签到（`checkin_spread_minutes`，默认 120）+ 余额查询解冻；**已签号不重复调用**，21 点窗口只补失败号；成功后按号跑**连登管家**；另有**每日兜底**（见下） |
 | 活跃上报 | `schedule.activity_enabled` | `activity_hours` `[10]` 整点 | 对话活跃上报（`chat_request_send` 事件，必须含 `userId`）；点亮连登 + 解锁 `first_buddy`；每号每天 1 次 |
 | 猫猫旅行 | `schedule.travel_enabled` | `travel_hours` `[9, 21]` 整点 | 独立排程：无猫领养 / `idle` 派出 / `arrived` 领奖 |
 | 保活 | `schedule.keepalive_enabled` | `keepalive_hours` `[22]` 整点 | 全账号刷新 token；session 失效**连续 3 次**才自动禁用 |
@@ -618,6 +620,26 @@ WARN: [server] stream ...: saw M native tool call block(s) but repaired none (to
 - **不跨零点**：偏移最晚截到 23:45（跨零点 = 当天漏签，连登会断）。
 
 `0` = 不分散（整点起按节流逐个签），保持旧行为。签到窗口是长任务，主循环不会等它跑完——同日的活跃/保活整点照常触发。
+
+#### 每日兜底（`schedule.checkin_catchup_*`）
+
+窗口排程只保证「进程在签到时点活着」；下面三种情况仍会漏签，由补签循环兜住：**时点已过才启动**（容器重启/升级）、**最后一轮全部失败**、**当日新加账号**。
+
+- **启动补一轮**：进程起来 60s 后（等凭证/网络就绪）扫一遍未签号，立即补；
+- **周期扫描**：之后每 `checkin_catchup_minutes`（默认 30）扫一次，只对未签号发请求，正常日零额外调用；账号间 2–9s 节流；
+- **最后一班车**：23:00–23:29 忽略退避与次数上限，再做当日最后一次补救；
+- **尝试台账**：每号每日最多 3 次普通补签，退避 30m / 1h / 2h，随 `state.json` 持久化（崩溃重启不会把上限清零成无限重试）；凭证已死的号不会被反复打；
+- **边界**：自动补签只在 00:05–23:30 触发，绝不跨零点（跨零点 = 当天漏签）；`checkin_enabled=false` 时补签一并关闭。
+
+进程**整天不在**时，任何进程内代码都救不了。需要硬保证时，用外部定时器打补签接口（只处理未签号，遵守退避）：
+
+```bash
+# 宿主机 cron / systemd timer，每天 22:30 兜一次
+curl -fsS -X POST -H "Authorization: Bearer $WB2A_API_KEY" \
+  http://127.0.0.1:7863/panel/api/checkin_all?pending=1
+```
+
+不带 `?pending=1` 是全量幂等扫（面板「立即签到」按钮走这条）。
 
 #### 禁用账号与保号任务（`schedule.include_disabled_in_tasks`）
 

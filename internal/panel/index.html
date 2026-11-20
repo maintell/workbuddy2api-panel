@@ -978,6 +978,10 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
                 <label class="fld"><span class="lb">窗口内错峰（分钟）</span>
                   <input name="checkin_spread_minutes" type="number" min="0" max="720" placeholder="120">
                   <span class="hint">0 = 不分散</span></label>
+                <div class="switch"><span class="lb">未签兜底</span>
+                  <input type="checkbox" name="checkin_catchup_enabled"></div>
+                <label class="fld"><span class="lb">兜底扫描间隔（分钟）</span>
+                  <input name="checkin_catchup_minutes" type="number" min="0" max="720" placeholder="30"></label>
               </div>
               <div>
                 <div class="switch"><span class="lb">Token 保活</span>

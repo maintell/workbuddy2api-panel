@@ -722,8 +722,17 @@ func (p *Panel) checkinAll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotImplemented, "scheduler not available")
 		return
 	}
+	// ?pending=1：只补「今日未签」的账号（外部 cron / 宿主机定时器用）。
+	// 与全量扫的区别：跳过已签号、遵守补签退避与次数上限，请求量只与漏签数相关。
+	// 不带该参数 = 面板按钮的全量幂等扫。
+	if r.URL.Query().Get("pending") == "1" {
+		go p.cfg.Scheduler.RunCheckinCatchupNow()
+		log.Printf("panel: 补签未签号已触发")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true, "pending": true})
+		return
+	}
 	go p.cfg.Scheduler.RunCheckinNow()
-	log.Printf("panel: 手动全量签到已触发（含猫猫旅行）")
+	log.Printf("panel: 手动全量签到已触发")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
 }
 

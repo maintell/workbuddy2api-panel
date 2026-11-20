@@ -113,8 +113,13 @@ type Status struct {
 	LastErrTime     time.Time  `json:"last_err,omitempty"`
 	// CheckinDone 本地今日已签到（签到成功或上游"今天已签到"幂等拒绝均算）。
 	// global 域账号无签到体系，恒为 false。面板签到按钮据此显示 签到/已签。
-	CheckinDone bool        `json:"checkin_done,omitempty"`
-	TokenUsage  TokenUsage  `json:"token_usage,omitempty"`
+	CheckinDone bool       `json:"checkin_done,omitempty"`
+	TokenUsage  TokenUsage `json:"token_usage,omitempty"`
+	// CheckinAttempts / CheckinNextAt 今日补签尝试台账（跨零点自然重置）：
+	// 补签循环据此退避，避免对凭证已死的号无限重试。只统计补签循环发起的
+	// 尝试，配置时点的正常窗口不受该台账限制。
+	CheckinAttempts int       `json:"checkin_attempts,omitempty"`
+	CheckinNextAt   time.Time `json:"checkin_next_at,omitempty"`
 	// ModelCosts 每模型实测成本台账（P1-anti-monopoly 可观测性）：运维据此自查
 	//「为什么总选它」——tier 0（免费）垄断 / tier 2 单价排序一眼可见。
 	// 仅 modelCostTTL 内的有效观测，每模型一行（cost_per_1k + last_seen +
@@ -213,9 +218,14 @@ type entry struct {
 	// 幂等拒绝（"今天已签到"）都算；statusOf 据此输出 CheckinDone 供面板按钮显示
 	// 签到/已签。持久化：跨重启不丢当日状态。
 	lastCheckinDay string
-	coolKind       CoolKind
-	until          time.Time // 冷却截止（即时冷却：CoolSoft 429 / CoolHard 余额耗尽）
-	disabled       bool
+	// checkinAttemptDay/checkinAttempts/checkinNextAt 补签尝试台账（每日重置）：
+	// 只统计「补签循环」发起的尝试，配置时点的正常窗口不记账。
+	checkinAttemptDay string
+	checkinAttempts   int
+	checkinNextAt     time.Time
+	coolKind          CoolKind
+	until             time.Time // 冷却截止（即时冷却：CoolSoft 429 / CoolHard 余额耗尽）
+	disabled          bool
 	// paused 暂停选号：与 disabled 正交。置位后退出选号候选（healthy 判否），
 	// 但保号任务遍历只按 Disabled 过滤，故 paused 号天然继续参与签到 / 活跃上报 /
 	// 保活 / 余额刷新。持久化（state.json），跨重启不丢。
@@ -449,8 +459,12 @@ type stateAccount struct {
 	LastErr        time.Time  `json:"last_err,omitempty"`
 	// LastCheckinDay 最近一次签到成功的本地日期（entry.lastCheckinDay 同源）。
 	// 持久化以保留「当日已签」状态：签到后重启，面板按钮不回退成「签到」。
-	LastCheckinDay string     `json:"last_checkin_day,omitempty"`
-	TokenUsage     TokenUsage `json:"token_usage,omitempty"`
+	LastCheckinDay string `json:"last_checkin_day,omitempty"`
+	// 补签尝试台账（entry.checkin* 同源）；缺字段 = 零值，旧 state 无需迁移。
+	CheckinAttemptDay string     `json:"checkin_attempt_day,omitempty"`
+	CheckinAttempts   int        `json:"checkin_attempts,omitempty"`
+	CheckinNextAt     time.Time  `json:"checkin_next_at,omitempty"`
+	TokenUsage        TokenUsage `json:"token_usage,omitempty"`
 	// 运行态计数（soft_streak/session_dead_fails/credits_expiring）不用 omitempty：
 	// 零值缺失会让人误以为"没记录"，实际是零值被省略。
 	SoftStreak int `json:"soft_streak"`

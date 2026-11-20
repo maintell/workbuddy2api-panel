@@ -585,6 +585,12 @@ func (p *Pool) List() []Status {
 }
 func (p *Pool) statusOf(uid string, e *entry) Status {
 	now := time.Now()
+	day := now.Format("2006-01-02")
+	// 补签台账按自然日惰性重置：跨零点后旧次数/退避不再生效。
+	attempts, nextAt := 0, time.Time{}
+	if e.checkinAttemptDay == day {
+		attempts, nextAt = e.checkinAttempts, e.checkinNextAt
+	}
 	st := Status{
 		UID: uid,
 		// 限额台账（issue #36）：仅「带解析时间 6004 的模型级软冷却」仍在生效时非空，
@@ -608,7 +614,9 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		Paused:                   e.paused,
 		SuccessCount:             e.successCount,
 		ErrTotal:                 e.errTotal,
-		CheckinDone:              e.lastCheckinDay == now.Format("2006-01-02"),
+		CheckinDone:              e.lastCheckinDay == day,
+		CheckinAttempts:          attempts,
+		CheckinNextAt:            nextAt,
 		TokenUsage:               e.tokenUsage,
 		LastSuccessTime:          e.lastSuccess,
 		LastErrTime:              e.lastErr,

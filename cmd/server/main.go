@@ -32,7 +32,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.15.9-panel"
+const appVersion = "1.15.10-panel"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -197,6 +197,7 @@ func main() {
 		Upstream:       up,
 		CheckinHours:   cfg.Schedule.CheckinHours,
 		CheckinSpread:  time.Duration(cfg.Schedule.CheckinSpreadMinutes) * time.Minute,
+		CheckinCatchup: cfg.CheckinCatchupInterval,
 		TravelHours:    cfg.Schedule.TravelHours,
 		ActivityHours:  cfg.Schedule.ActivityHours,
 		KeepaliveHours: cfg.Schedule.KeepaliveHours,
@@ -221,6 +222,14 @@ func main() {
 			cfg.Schedule.CheckinHours, cfg.Schedule.CheckinSpreadMinutes)
 	default:
 		log.Printf("签到已启用：%v 点（签到 + 余额查询解冻，未开启错峰）", cfg.Schedule.CheckinHours)
+	}
+	if cfg.Schedule.CheckinEnabled {
+		switch {
+		case cfg.CheckinCatchupInterval > 0:
+			log.Printf("签到兜底：启动补一轮 + 每 %s 扫未签号，23:00 最后一班车（防漏签）", cfg.CheckinCatchupInterval)
+		default:
+			log.Printf("签到兜底已关闭（schedule.checkin_catchup_enabled=false）")
+		}
 	}
 	switch {
 	case !cfg.Schedule.TravelEnabled:
@@ -366,6 +375,11 @@ func main() {
 	go sch.Run(ctx)
 	sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
 	sch.StartTaskSweep(ctx, cfg.TaskSweepInterval)
+	// 每日补签兜底：启动补一轮 + 周期扫未签号（见 scheduler/checkin_catchup.go）。
+	// 关闭自动签到或兜底开关时 Start 立即返回（interval=0）。
+	if cfg.Schedule.CheckinEnabled {
+		sch.StartCheckinCatchup(ctx)
+	}
 
 	// 启动即预热模型积分倍率表：倍率只在 FetchModels/FetchGlobalModelInfos 成功时
 	// 填充（两者均懒触发），重启后到首次 /v1/models 或面板模型页被访问之前，
@@ -566,6 +580,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 	sch.SetTaskSweepInterval(newCfg.TaskSweepInterval)
 	sch.SetIncludeDisabledInTasks(newCfg.Schedule.IncludeDisabledInTasks)
 	sch.SetCheckinSpread(time.Duration(newCfg.Schedule.CheckinSpreadMinutes) * time.Minute)
+	sch.SetCheckinCatchup(newCfg.CheckinCatchupInterval)
 
 	return restartRequiredFields(newCfg), nil
 }
